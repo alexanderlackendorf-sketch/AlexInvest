@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import prisma from '@/services/db';
 import { verifyToken } from '@/services/auth';
-import { syncAllStocks } from '@/services/yahooFinance';
+import { syncAllStocks, syncStockSignal } from '@/services/yahooFinance';
 
 // Helper to check authentication
 async function getSessionUser() {
@@ -44,7 +44,32 @@ export async function GET(req: Request) {
         select: { symbol: true }
       });
       const symbols = watchlistItems.map(item => item.symbol);
-      whereClause.symbol = { in: symbols };
+      let stocks = await prisma.stock.findMany({
+        where: { symbol: { in: symbols } }
+      });
+
+      const cacheMaxAgeMs = 2 * 60 * 1000;
+      const now = Date.now();
+      const outdatedSymbols = stocks
+        .filter(s => s.price === 0 || s.ema200 === null || (now - new Date(s.updatedAt).getTime()) > cacheMaxAgeMs)
+        .map(s => s.symbol);
+
+      if (outdatedSymbols.length > 0) {
+        console.log(`Auto-syncing ${outdatedSymbols.length} outdated watchlist stocks:`, outdatedSymbols);
+        // Run sync in parallel (limited to first 15 to avoid API rate limits)
+        await Promise.all(outdatedSymbols.slice(0, 15).map(symbol =>
+          syncStockSignal(symbol).catch(err => console.warn(`Failed to auto-sync watchlist stock ${symbol}:`, err))
+        ));
+        // Refetch updated stocks
+        stocks = await prisma.stock.findMany({
+          where: { symbol: { in: symbols } }
+        });
+      }
+
+      // Sort alphabetically by symbol
+      stocks.sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+      return NextResponse.json({ stocks });
     }
 
     const stocks = await prisma.stock.findMany({
