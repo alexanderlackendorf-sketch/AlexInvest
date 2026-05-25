@@ -1,0 +1,82 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                 String          @id @default(uuid())
+  username           String          @unique
+  passwordHash       String
+  role               String          @default("USER") // ADMIN or USER
+  mustChangePassword Boolean         @default(true)
+  watchlists         WatchlistItem[]
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+}
+
+model WatchlistItem {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  symbol    String
+  name      String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, symbol])
+}
+
+model Stock {
+  symbol              String   @id
+  name                String
+  index               String   // DAX or SP500
+  price               Float
+  change              Float
+  changePercent       Float
+  peRatio             Float?
+  rsi                 Float?
+  ema200              Float?
+  score               Float
+  signal              String   // BUY, HOLD, SELL
+  reason              String
+  wkn                 String?
+  isin                String?
+  country             String?
+  sector              String?  // Branche
+  marketCap           Float?
+  dividendYield       Float?
+  eps                 Float?
+  yearPerformance     Float?
+  revenueGrowthScore  Int?
+  earningsGrowthScore Int?
+  ebitdaMarginScore   Int?
+  website             String?
+  aiAssessment        String?
+  updatedAt           DateTime @updatedAt
+}
+
+model SignalHistory {
+  id        String   @id @default(uuid())
+  symbol    String
+  signal    String   // BUY, HOLD, SELL
+  score     Float
+  date      DateTime @default(now())
+
+  @@index([symbol])
+}
+
+model MarketAnalysis {
+  id          String   @id @default(uuid())
+  sentiment   String   // z.B. "Erhöhte Wachsamkeit (Risk-Off)"
+  riskScore   Float    // 0 bis 100
+  topFactors  String   // JSON stringified array of strings
+  summary     String   // text summary
+  vixValue    Float?
+  updatedAt   DateTime @updatedAt
+}
