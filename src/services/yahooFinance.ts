@@ -195,6 +195,14 @@ export async function syncStockSignal(symbol: string): Promise<void> {
     let ebitdaMargins = 0;
     let yearlyEarnings: any[] = [];
 
+    // Analyst target fields
+    let analystTargetLow: number | null = null;
+    let analystTargetHigh: number | null = null;
+    let analystTargetMean: number | null = null;
+    let analystTargetMedian: number | null = null;
+    let analystRecommendation: string | null = null;
+    let analystCount: number | null = null;
+
     try {
       const summary = (await yahooFinance.quoteSummary(symbol, {
         modules: ['assetProfile', 'financialData', 'defaultKeyStatistics', 'summaryDetail', 'earnings']
@@ -213,6 +221,13 @@ export async function syncStockSignal(symbol: string): Promise<void> {
           revenueGrowth = summary.financialData.revenueGrowth ?? 0;
           earningsGrowth = summary.financialData.earningsGrowth ?? 0;
           ebitdaMargins = summary.financialData.ebitdaMargins ?? 0;
+
+          analystTargetLow = summary.financialData.targetLowPrice ?? null;
+          analystTargetHigh = summary.financialData.targetHighPrice ?? null;
+          analystTargetMean = summary.financialData.targetMeanPrice ?? null;
+          analystTargetMedian = summary.financialData.targetMedianPrice ?? null;
+          analystRecommendation = summary.financialData.recommendationKey ?? null;
+          analystCount = summary.financialData.numberOfAnalystOpinions ?? null;
         }
 
         if (summary.earnings?.financialsChart?.yearly) {
@@ -464,29 +479,6 @@ export async function syncStockSignal(symbol: string): Promise<void> {
 
     const reason = analysisBlocks.join('\n\n');
 
-    // 6.5 Fetch news headlines for AI Stock Analysis
-    let newsHeadlines: string[] = [];
-    try {
-      const searchResult = await yahooFinance.search(symbol, { newsCount: 3 });
-      if (searchResult.news) {
-        newsHeadlines = searchResult.news.map((n: any) => n.title).filter(Boolean);
-      }
-    } catch (err) {
-      console.warn(`Failed to fetch headlines for stock ${symbol} during sync:`, err);
-    }
-
-    let aiAssessment: string | null = null;
-    try {
-      aiAssessment = await generateStockAnalysis(symbol, name, {
-        price,
-        peRatio,
-        rsi,
-        ema200
-      }, newsHeadlines);
-    } catch (err) {
-      console.warn(`Failed to calculate AI assessment for ${symbol}:`, err);
-    }
-
     // 7. Save to Stock Database (preserving pre-seeded metadata if null)
     await prisma.stock.update({
       where: { symbol },
@@ -501,7 +493,12 @@ export async function syncStockSignal(symbol: string): Promise<void> {
         score,
         signal,
         reason,
-        aiAssessment,
+        analystTargetLow,
+        analystTargetHigh,
+        analystTargetMean,
+        analystTargetMedian,
+        analystRecommendation,
+        analystCount,
         sector: sector || undefined,
         // Only override static fields if we actually found something
         country: country ? country : undefined, 

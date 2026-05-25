@@ -28,7 +28,12 @@ interface StockItem {
   eps: number | null;
   yearPerformance: number | null;
   website: string | null;
-  aiAssessment?: string | null;
+  analystTargetLow: number | null;
+  analystTargetHigh: number | null;
+  analystTargetMean: number | null;
+  analystTargetMedian: number | null;
+  analystRecommendation: string | null;
+  analystCount: number | null;
 }
 
 function CompanyLogo({ name, symbol, website, large = false }: { name: string; symbol: string; website: string | null; large?: boolean }) {
@@ -527,23 +532,152 @@ export default function StockDetailPage() {
               )}
             </div>
 
-            {/* KI-Risiko- und Geopolitik-Einschätzung */}
-            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', borderLeft: '4px solid var(--primary)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '1.1rem' }}>🤖</span>
-                <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
-                  KI-Risiko- & Geopolitik-Einschätzung
-                </h3>
+            {/* Experten-Kursziele & Analystenschätzungen */}
+            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', borderLeft: '4px solid var(--primary)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1.1rem' }}>🎯</span>
+                  <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
+                    Experten-Kursziele & Empfehlungen
+                  </h3>
+                </div>
+                {stock.analystCount && stock.analystCount > 0 ? (
+                  <span style={{ fontSize: '0.675rem', color: 'var(--text-secondary)', backgroundColor: 'rgba(255,255,255,0.05)', padding: '0.2rem 0.5rem', borderRadius: '4px' }}>
+                    Basierend auf {stock.analystCount} Analysten
+                  </span>
+                ) : null}
               </div>
-              <p style={{
-                fontSize: '0.775rem',
-                lineHeight: '1.6',
-                color: 'var(--text-primary)',
-                textAlign: 'justify',
-                margin: 0
-              }}>
-                {stock.aiAssessment || 'Für dieses Wertpapier liegt aktuell noch keine geopolitische Einschätzung vor. Bitte synchronisieren Sie den Kurs, um eine aktuelle KI-Bewertung zu generieren.'}
-              </p>
+
+              {stock.analystTargetMean && stock.analystTargetMean > 0 ? (() => {
+                const isEur = stock.index === 'DAX' || stock.symbol.endsWith('.DE');
+                const sign = isEur ? '€' : '$';
+                
+                const low = stock.analystTargetLow || 0;
+                const high = stock.analystTargetHigh || 0;
+                const mean = stock.analystTargetMean || 0;
+                const median = stock.analystTargetMedian || 0;
+                const current = stock.price || 0;
+                
+                // Calculate Upside/Downside
+                const potentialPercent = ((mean - current) / current) * 100;
+                const isUpside = potentialPercent >= 0;
+                
+                // Position percentages on range bar (clamped 0-100)
+                let currentPercent = 50;
+                let meanPercent = 50;
+                if (high > low) {
+                  currentPercent = Math.min(100, Math.max(0, ((current - low) / (high - low)) * 100));
+                  meanPercent = Math.min(100, Math.max(0, ((mean - low) / (high - low)) * 100));
+                }
+
+                // Map recommendations
+                const recRaw = stock.analystRecommendation?.toLowerCase() || '';
+                let recText = 'Halten';
+                let recColor = 'var(--warning)';
+                if (['strong_buy', 'strong buy', 'buy', 'outperform'].some(k => recRaw.includes(k))) {
+                  recText = 'Kauf-Empfehlung';
+                  recColor = 'var(--buy-green)';
+                } else if (['sell', 'strong_sell', 'underperform', 'under-perform'].some(k => recRaw.includes(k))) {
+                  recText = 'Verkaufs-Empfehlung';
+                  recColor = 'var(--sell-red)';
+                }
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                    {/* Header metrics */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                        <span style={{ fontSize: '0.675rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Mittleres Kursziel</span>
+                        <span style={{ fontSize: '1.5rem', fontWeight: 800, color: '#ffffff' }}>
+                          {mean.toFixed(2)} {sign}
+                        </span>
+                      </div>
+                      
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                        <span style={{ fontSize: '0.675rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Potenzial (Konsens)</span>
+                        <span style={{ fontSize: '1.5rem', fontWeight: 800, color: isUpside ? 'var(--buy-green)' : 'var(--sell-red)' }}>
+                          {isUpside ? '+' : ''}{potentialPercent.toFixed(2)}%
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                        <span style={{ fontSize: '0.675rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Analysten-Konsensus</span>
+                        <span style={{ fontSize: '1.1rem', fontWeight: 800, color: recColor, display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem' }}>
+                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: recColor, display: 'inline-block' }}></span>
+                          {recText}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Range Visualizer bar */}
+                    <div style={{ padding: '0.75rem 0.5rem', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.675rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                        <span>Niedrigst: {low.toFixed(2)} {sign}</span>
+                        <span>Höchst: {high.toFixed(2)} {sign}</span>
+                      </div>
+
+                      <div style={{ position: 'relative', height: '8px', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: '99px', margin: '1.25rem 0' }}>
+                        {/* Mean target line */}
+                        <div style={{
+                          position: 'absolute',
+                          top: 0,
+                          bottom: 0,
+                          left: `${meanPercent}%`,
+                          width: '2px',
+                          backgroundColor: 'var(--primary)',
+                          zIndex: 1
+                        }}>
+                          <div style={{
+                            position: 'absolute',
+                            top: '-15px',
+                            left: '50%',
+                            transform: 'translateX(-50%)',
+                            fontSize: '0.6rem',
+                            color: 'var(--primary)',
+                            fontWeight: 700,
+                            whiteSpace: 'nowrap'
+                          }}>Ziel</div>
+                        </div>
+
+                        {/* Current price indicator dot */}
+                        <div style={{
+                          position: 'absolute',
+                          top: '50%',
+                          left: `${currentPercent}%`,
+                          transform: 'translate(-50%, -50%)',
+                          width: '14px',
+                          height: '14px',
+                          borderRadius: '50%',
+                          backgroundColor: '#ffffff',
+                          border: '3px solid var(--primary)',
+                          boxShadow: '0 0 8px rgba(6,182,212,0.8)',
+                          zIndex: 2
+                        }}>
+                          <div style={{
+                            position: 'absolute',
+                            bottom: '-18px',
+                            left: '50%',
+                            transform: 'translateX(-50%)',
+                            fontSize: '0.6rem',
+                            color: '#ffffff',
+                            fontWeight: 700,
+                            whiteSpace: 'nowrap'
+                          }}>Kurs</div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.675rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                        <span>Median-Ziel: {median.toFixed(2)} {sign}</span>
+                        <span>Aktueller Kurs: {current.toFixed(2)} {sign}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.8rem', border: '1px dashed var(--border-color)', borderRadius: '6px' }}>
+                  Für dieses Wertpapier liegen aktuell keine Analystenschätzungen vor. Bitte synchronisieren Sie den Kurs, um aktuelle Daten zu laden.
+                </div>
+              )}
             </div>
 
           </div>

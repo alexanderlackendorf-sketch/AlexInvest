@@ -57,7 +57,12 @@ model Stock {
   earningsGrowthScore Int?
   ebitdaMarginScore   Int?
   website             String?
-  aiAssessment        String?
+  analystTargetLow    Float?
+  analystTargetHigh   Float?
+  analystTargetMean   Float?
+  analystTargetMedian Float?
+  analystRecommendation String?
+  analystCount        Int?
   updatedAt           DateTime @updatedAt
 }
 

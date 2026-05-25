@@ -43,10 +43,10 @@ export async function GET(
       return NextResponse.json({ error: 'Aktie nicht gefunden' }, { status: 404 });
     }
 
-    // Auto-sync if price is 0, or EMA200/AI assessment is missing (due to new database schema)
-    if (stock.price === 0 || stock.ema200 === null || !stock.aiAssessment) {
+    // Auto-sync if price is 0, or EMA200 is missing (due to new database schema)
+    if (stock.price === 0 || stock.ema200 === null) {
       try {
-        console.log(`Auto-syncing stock ${cleanSymbol} to calculate EMA200 and generate AI assessment...`);
+        console.log(`Auto-syncing stock ${cleanSymbol} to calculate EMA200 and fetch analyst targets...`);
         await syncStockSignal(cleanSymbol);
         stock = await prisma.stock.findUnique({
           where: { symbol: cleanSymbol }
