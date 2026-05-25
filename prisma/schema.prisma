@@ -43,6 +43,10 @@ model Stock {
   rsi                 Float?
   ema200              Float?
   score               Float
+  scoreTrend          Float    @default(0)
+  scoreGrowth         Float    @default(0)
+  scoreValuation      Float    @default(0)
+  scoreSentiment      Float    @default(0)
   signal              String   // BUY, HOLD, SELL
   reason              String
   wkn                 String?

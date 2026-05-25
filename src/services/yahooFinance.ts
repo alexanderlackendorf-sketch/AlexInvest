@@ -203,6 +203,15 @@ export async function syncStockSignal(symbol: string): Promise<void> {
     let analystRecommendation: string | null = null;
     let analystCount: number | null = null;
 
+    // New metrics for professional quantitative model
+    let returnOnEquity: number | null = null;
+    let returnOnAssets: number | null = null;
+    let pegRatio: number | null = null;
+    let priceToBook: number | null = null;
+    let priceToSales: number | null = null;
+    let recommendationMean: number | null = null;
+    let fiftyTwoWeekHigh: number | null = null;
+
     try {
       const summary = (await yahooFinance.quoteSummary(symbol, {
         modules: ['assetProfile', 'financialData', 'defaultKeyStatistics', 'summaryDetail', 'earnings']
@@ -228,6 +237,26 @@ export async function syncStockSignal(symbol: string): Promise<void> {
           analystTargetMedian = summary.financialData.targetMedianPrice ?? null;
           analystRecommendation = summary.financialData.recommendationKey ?? null;
           analystCount = summary.financialData.numberOfAnalystOpinions ?? null;
+
+          // New metrics
+          returnOnEquity = summary.financialData.returnOnEquity ?? null;
+          returnOnAssets = summary.financialData.returnOnAssets ?? null;
+          recommendationMean = summary.financialData.recommendationMean ?? null;
+        }
+
+        if (summary.defaultKeyStatistics) {
+          pegRatio = summary.defaultKeyStatistics.pegRatio ?? null;
+          priceToBook = summary.defaultKeyStatistics.priceToBook ?? null;
+        }
+
+        if (summary.summaryDetail) {
+          fiftyTwoWeekHigh = summary.summaryDetail.fiftyTwoWeekHigh ?? null;
+          priceToSales = summary.summaryDetail.priceToSalesTrailing12Months ?? null;
+        }
+        
+        // Fallback for fiftyTwoWeekHigh from quote if summaryDetail is missing
+        if (!fiftyTwoWeekHigh && quote?.fiftyTwoWeekHigh) {
+          fiftyTwoWeekHigh = quote.fiftyTwoWeekHigh;
         }
 
         if (summary.earnings?.financialsChart?.yearly) {
@@ -272,86 +301,31 @@ export async function syncStockSignal(symbol: string): Promise<void> {
       console.warn(`Could not calculate year performance for ${symbol}:`, err);
     }
 
-    // 5. Calculate 10-Bar Scores
-    // A. Revenue Growth Score (1-10)
+    // 5. Calculate 10-Bar Scores (for compatibility with existing model fields)
     let revenueGrowthScore = 4;
-    if (yearlyEarnings.length >= 2) {
-      let sumGrowth = 0;
-      let countGrowth = 0;
-      for (let i = 1; i < yearlyEarnings.length; i++) {
-        const prev = yearlyEarnings[i - 1].revenue;
-        const curr = yearlyEarnings[i].revenue;
-        if (prev > 0) {
-          sumGrowth += (curr - prev) / prev;
-          countGrowth++;
-        }
-      }
-      const cagr = countGrowth > 0 ? (sumGrowth / countGrowth) : 0;
-      const combinedRevGrowth = (cagr * 0.7) + (revenueGrowth * 0.3);
+    if (revenueGrowth >= 0.25) revenueGrowthScore = 10;
+    else if (revenueGrowth >= 0.20) revenueGrowthScore = 9;
+    else if (revenueGrowth >= 0.15) revenueGrowthScore = 8;
+    else if (revenueGrowth >= 0.10) revenueGrowthScore = 7;
+    else if (revenueGrowth >= 0.05) revenueGrowthScore = 6;
+    else if (revenueGrowth >= 0.02) revenueGrowthScore = 5;
+    else if (revenueGrowth >= 0.00) revenueGrowthScore = 4;
+    else if (revenueGrowth >= -0.05) revenueGrowthScore = 3;
+    else if (revenueGrowth >= -0.15) revenueGrowthScore = 2;
+    else revenueGrowthScore = 1;
 
-      if (combinedRevGrowth >= 0.25) revenueGrowthScore = 10;
-      else if (combinedRevGrowth >= 0.20) revenueGrowthScore = 9;
-      else if (combinedRevGrowth >= 0.15) revenueGrowthScore = 8;
-      else if (combinedRevGrowth >= 0.10) revenueGrowthScore = 7;
-      else if (combinedRevGrowth >= 0.05) revenueGrowthScore = 6;
-      else if (combinedRevGrowth >= 0.02) revenueGrowthScore = 5;
-      else if (combinedRevGrowth >= 0.00) revenueGrowthScore = 4;
-      else if (combinedRevGrowth >= -0.05) revenueGrowthScore = 3;
-      else if (combinedRevGrowth >= -0.15) revenueGrowthScore = 2;
-      else revenueGrowthScore = 1;
-    } else {
-      if (revenueGrowth >= 0.25) revenueGrowthScore = 10;
-      else if (revenueGrowth >= 0.20) revenueGrowthScore = 9;
-      else if (revenueGrowth >= 0.15) revenueGrowthScore = 8;
-      else if (revenueGrowth >= 0.10) revenueGrowthScore = 7;
-      else if (revenueGrowth >= 0.05) revenueGrowthScore = 6;
-      else if (revenueGrowth >= 0.02) revenueGrowthScore = 5;
-      else if (revenueGrowth >= 0.00) revenueGrowthScore = 4;
-      else if (revenueGrowth >= -0.05) revenueGrowthScore = 3;
-      else if (revenueGrowth >= -0.15) revenueGrowthScore = 2;
-      else revenueGrowthScore = 1;
-    }
-
-    // B. Earnings Growth Score (1-10)
     let earningsGrowthScore = 5;
-    if (yearlyEarnings.length >= 2) {
-      let sumGrowth = 0;
-      let countGrowth = 0;
-      for (let i = 1; i < yearlyEarnings.length; i++) {
-        const prev = yearlyEarnings[i - 1].earnings;
-        const curr = yearlyEarnings[i].earnings;
-        if (prev > 0) {
-          sumGrowth += (curr - prev) / prev;
-          countGrowth++;
-        }
-      }
-      const cagr = countGrowth > 0 ? (sumGrowth / countGrowth) : 0;
-      const combinedEarnGrowth = (cagr * 0.7) + (earningsGrowth * 0.3);
+    if (earningsGrowth >= 0.30) earningsGrowthScore = 10;
+    else if (earningsGrowth >= 0.20) earningsGrowthScore = 9;
+    else if (earningsGrowth >= 0.15) earningsGrowthScore = 8;
+    else if (earningsGrowth >= 0.10) earningsGrowthScore = 7;
+    else if (earningsGrowth >= 0.05) earningsGrowthScore = 6;
+    else if (earningsGrowth >= 0.00) earningsGrowthScore = 5;
+    else if (earningsGrowth >= -0.05) earningsGrowthScore = 4;
+    else if (earningsGrowth >= -0.15) earningsGrowthScore = 3;
+    else if (earningsGrowth >= -0.30) earningsGrowthScore = 2;
+    else earningsGrowthScore = 1;
 
-      if (combinedEarnGrowth >= 0.30) earningsGrowthScore = 10;
-      else if (combinedEarnGrowth >= 0.20) earningsGrowthScore = 9;
-      else if (combinedEarnGrowth >= 0.15) earningsGrowthScore = 8;
-      else if (combinedEarnGrowth >= 0.10) earningsGrowthScore = 7;
-      else if (combinedEarnGrowth >= 0.05) earningsGrowthScore = 6;
-      else if (combinedEarnGrowth >= 0.00) earningsGrowthScore = 5;
-      else if (combinedEarnGrowth >= -0.05) earningsGrowthScore = 4;
-      else if (combinedEarnGrowth >= -0.15) earningsGrowthScore = 3;
-      else if (combinedEarnGrowth >= -0.30) earningsGrowthScore = 2;
-      else earningsGrowthScore = 1;
-    } else {
-      if (earningsGrowth >= 0.30) earningsGrowthScore = 10;
-      else if (earningsGrowth >= 0.20) earningsGrowthScore = 9;
-      else if (earningsGrowth >= 0.15) earningsGrowthScore = 8;
-      else if (earningsGrowth >= 0.10) earningsGrowthScore = 7;
-      else if (earningsGrowth >= 0.05) earningsGrowthScore = 6;
-      else if (earningsGrowth >= 0.00) earningsGrowthScore = 5;
-      else if (earningsGrowth >= -0.05) earningsGrowthScore = 4;
-      else if (earningsGrowth >= -0.15) earningsGrowthScore = 3;
-      else if (earningsGrowth >= -0.30) earningsGrowthScore = 2;
-      else earningsGrowthScore = 1;
-    }
-
-    // C. EBITDA Margin Score (1-10)
     let ebitdaMarginScore = 5;
     if (ebitdaMargins >= 0.35) ebitdaMarginScore = 10;
     else if (ebitdaMargins >= 0.30) ebitdaMarginScore = 9;
@@ -372,152 +346,372 @@ export async function syncStockSignal(symbol: string): Promise<void> {
     let technicalScore = 0;
     const techAnalysis: string[] = [];
     
+    // SMA50 & EMA200 Alignment (Max 12 pts)
     if (sma50 > 0 && ema200 > 0) {
       if (price > sma50 && sma50 > ema200) {
-        technicalScore += 15;
+        technicalScore += 12;
         techAnalysis.push(`Die Aktie befindet sich in einem starken, etablierten Aufwärtstrend. Der Kurs notiert über der 50-Tage-Linie (${sma50.toFixed(2)} ${sign}), welche wiederum über der 200-Tage-Linie (${ema200.toFixed(2)} ${sign}) verläuft (bullische Ausrichtung).`);
       } else if (price > ema200) {
-        technicalScore += 10;
+        technicalScore += 8;
         techAnalysis.push(`Der Kurs notiert über dem langfristigen 200-Tage-Durchschnitt (${ema200.toFixed(2)} ${sign}), was einen übergeordneten Aufwärtstrend bestätigt, wenngleich kurzfristige Dynamik-Abschwächungen vorliegen.`);
       } else if (price > sma50) {
-        technicalScore += 5;
+        technicalScore += 4;
         techAnalysis.push(`Die Aktie notiert über der kurzfristigen 50-Tage-Linie (${sma50.toFixed(2)} ${sign}), befindet sich jedoch unter der langfristigen 200-Tage-Linie. Dies deutet auf eine potenzielle kurzfristige Bodenbildung hin.`);
       } else {
         technicalScore += 0;
         techAnalysis.push(`Die Aktie befindet sich in einem etablierten Abwärtstrend. Der Kurs notiert sowohl unter dem 50-Tage- (${sma50.toFixed(2)} ${sign}) als auch unter dem 200-Tage-Durchschnitt (${ema200.toFixed(2)} ${sign}) (bärische Ausrichtung).`);
       }
     } else {
-      technicalScore += 8;
+      technicalScore += 6;
       techAnalysis.push(`Aufgrund unzureichender historischer Kursdaten konnte kein vollständiger Gleitender Durchschnitt berechnet werden.`);
     }
 
-    if (rsi < 20) {
-      technicalScore += 5;
-      techAnalysis.push(`Der Relative-Strength-Index (RSI 14) liegt im extrem überverkauften Bereich (${rsi.toFixed(1)}), was auf eine Panikphase hindeutet. Das Reversal-Potenzial ist hoch, das Risiko eines weiteren Verkaufsdrucks jedoch ebenfalls.`);
-    } else if (rsi < 35) {
-      technicalScore += 10;
-      techAnalysis.push(`Der RSI (14) signalisiert mit einem Wert von ${rsi.toFixed(1)} einen überverkauften Zustand, was eine technische Gegenreaktion nach oben wahrscheinlich macht.`);
-    } else if (rsi >= 35 && rsi <= 55) {
-      technicalScore += 8;
-      techAnalysis.push(`Mit einem RSI von ${rsi.toFixed(1)} bewegt sich die Aktie in einem gesunden, neutralen Akkumulationsbereich.`);
-    } else if (rsi > 55 && rsi <= 70) {
-      technicalScore += 5;
-      techAnalysis.push(`Der RSI liegt bei ${rsi.toFixed(1)} im leicht überkauften Bereich. Die Dynamik ist positiv, nähert sich aber einer kurzfristigen Überhitzung.`);
+    // RSI (Max 6 pts)
+    if (rsi !== null) {
+      if (rsi < 30) {
+        technicalScore += 6;
+        techAnalysis.push(`Der Relative-Strength-Index (RSI 14) liegt im überverkauften Bereich (${rsi.toFixed(1)}), was kurzfristig Rebound-Potenzial signalisiert.`);
+      } else if (rsi >= 30 && rsi < 45) {
+        technicalScore += 4;
+        techAnalysis.push(`Der RSI (14) signalisiert mit einem Wert von ${rsi.toFixed(1)} eine gesunde Abkühlung und nähert sich dem überverkauften Zustand.`);
+      } else if (rsi >= 45 && rsi <= 70) {
+        technicalScore += 5;
+        techAnalysis.push(`Mit einem RSI von ${rsi.toFixed(1)} zeigt die Aktie ein stabiles, neutral-bullisches Momentum.`);
+      } else {
+        technicalScore += 1;
+        techAnalysis.push(`Der RSI liegt bei ${rsi.toFixed(1)} im überkauften Bereich, was die Gefahr eines kurzfristigen Rücksetzers erhöht.`);
+      }
     } else {
-      technicalScore += 1;
-      techAnalysis.push(`Der RSI liegt bei ${rsi.toFixed(1)} im stark überkauften Bereich. Ein kurzfristiger Rücksetzer ist hochgradig wahrscheinlich.`);
+      technicalScore += 4;
+    }
+
+    // Distance to 52-Week High (Max 7 pts)
+    if (fiftyTwoWeekHigh && fiftyTwoWeekHigh > 0) {
+      const distToHigh = (fiftyTwoWeekHigh - price) / fiftyTwoWeekHigh;
+      if (distToHigh <= 0.08) {
+        technicalScore += 7;
+        techAnalysis.push(`Mit nur ${(distToHigh * 100).toFixed(1)}% Abstand zum 52-Wochen-Hoch (${fiftyTwoWeekHigh.toFixed(2)} ${sign}) zeigt die Aktie eine hervorragende relative Stärke und starkes Momentum.`);
+      } else if (distToHigh <= 0.20) {
+        technicalScore += 5;
+        techAnalysis.push(`Die Aktie notiert moderat unter ihrem 52-Wochen-Hoch (Abstand: ${(distToHigh * 100).toFixed(1)}%).`);
+      } else if (distToHigh <= 0.40) {
+        technicalScore += 3;
+        techAnalysis.push(`Der Kurs liegt deutlich unter dem 52-Wochen-Hoch (Abstand: ${(distToHigh * 100).toFixed(1)}%), was auf eine stärkere Korrektur hindeutet.`);
+      } else {
+        technicalScore += 1;
+        techAnalysis.push(`Die Aktie hat über 40% an Wert vom 52-Wochen-Hoch verloren, was auf einen schwer beschädigten Trend hindeutet.`);
+      }
+    } else {
+      technicalScore += 4;
     }
     analysisBlocks.push(`Trend & Momentum (Score: ${technicalScore}/25):\n${techAnalysis.join(' ')}`);
 
     // --- Pillar 2: Growth & Quality (Max 25 pts) ---
     let growthScore = 0;
     const growthAnalysis: string[] = [];
-    
-    growthScore += revenueGrowthScore; // 1-10
-    growthScore += earningsGrowthScore; // 1-10
-    const marginContribution = Math.round(ebitdaMarginScore / 2);
-    growthScore += marginContribution; // 1-5
-    
-    growthAnalysis.push(`Das Umsatzwachstum wird mit ${revenueGrowthScore}/10 Punkten bewertet, das Gewinnwachstum mit ${earningsGrowthScore}/10. Die operative Profitabilität (EBITDA-Marge) steuert weitere ${marginContribution}/5 Punkte bei. Dies belegt ein solides fundamentales Wachstumsprofil.`);
+
+    // ROE & ROA (Max 8 pts)
+    let roeScore = 4;
+    if (returnOnEquity !== null || returnOnAssets !== null) {
+      const roe = returnOnEquity ?? 0;
+      const roa = returnOnAssets ?? 0;
+      if (roe > 0.18 || roa > 0.10) {
+        roeScore = 8;
+        growthAnalysis.push(`Das Unternehmen weist eine hervorragende Kapitalrendite auf (Eigenkapitalrendite: ${(roe * 100).toFixed(1)}%, Gesamtkapitalrendite: ${(roa * 100).toFixed(1)}%), was auf eine hohe operative Qualität und Kapitaleffizienz hindeutet.`);
+      } else if (roe > 0.10 || roa > 0.06) {
+        roeScore = 6;
+        growthAnalysis.push(`Die Rentabilität liegt auf einem soliden, überdurchschnittlichen Niveau (Eigenkapitalrendite: ${(roe * 100).toFixed(1)}%).`);
+      } else if (roe > 0.05 || roa > 0.03) {
+        roeScore = 4;
+        growthAnalysis.push(`Die Rentabilitätskennzahlen sind moderat (Eigenkapitalrendite: ${(roe * 100).toFixed(1)}%).`);
+      } else if (roe > 0.00) {
+        roeScore = 2;
+        growthAnalysis.push(`Das Unternehmen ist knapp profitabel, zeigt aber eine geringe Rentabilität des eingesetzten Kapitals.`);
+      } else {
+        roeScore = 0;
+        growthAnalysis.push(`Das Unternehmen verzeichnet eine negative Eigenkapitalrendite (${(roe * 100).toFixed(1)}%), was auf Verluste hindeutet.`);
+      }
+    } else {
+      growthAnalysis.push(`Keine ausreichenden Daten zur Kapitalrendite (ROE/ROA) vorhanden.`);
+    }
+    growthScore += roeScore;
+
+    // EBITDA / Operating Margin (Max 7 pts)
+    let marginScore = 3;
+    if (ebitdaMargins > 0 || operatingMargin > 0) {
+      if (ebitdaMargins > 0.25 || operatingMargin > 0.20) {
+        marginScore = 7;
+        growthAnalysis.push(`Die operativen Margen sind exzellent (EBITDA-Marge: ${(ebitdaMargins * 100).toFixed(1)}%, operative Marge: ${(operatingMargin * 100).toFixed(1)}%), was für eine starke Preissetzungsmacht spricht.`);
+      } else if (ebitdaMargins > 0.15 || operatingMargin > 0.12) {
+        marginScore = 5;
+        growthAnalysis.push(`Die operativen Margen sind mit einer EBITDA-Marge von ${(ebitdaMargins * 100).toFixed(1)}% auf einem gesunden Niveau.`);
+      } else if (ebitdaMargins > 0.08 || operatingMargin > 0.05) {
+        marginScore = 3;
+        growthAnalysis.push(`Die Margen sind moderat (EBITDA-Marge: ${(ebitdaMargins * 100).toFixed(1)}%).`);
+      } else if (ebitdaMargins > 0.00) {
+        marginScore = 1;
+        growthAnalysis.push(`Die Marge ist sehr dünn, was das Unternehmen anfällig für Kostensteigerungen macht.`);
+      } else {
+        marginScore = 0;
+        growthAnalysis.push(`Das Unternehmen operiert mit einer negativen Marge (EBITDA-Marge: ${(ebitdaMargins * 100).toFixed(1)}%).`);
+      }
+    } else {
+      growthAnalysis.push(`Keine ausreichenden Margendaten verfügbar.`);
+    }
+    growthScore += marginScore;
+
+    // Revenue Growth (Max 5 pts)
+    let revScore = 2;
+    if (yearlyEarnings.length >= 2) {
+      let sumGrowth = 0;
+      let countGrowth = 0;
+      for (let i = 1; i < yearlyEarnings.length; i++) {
+        const prev = yearlyEarnings[i - 1].revenue;
+        const curr = yearlyEarnings[i].revenue;
+        if (prev > 0) {
+          sumGrowth += (curr - prev) / prev;
+          countGrowth++;
+        }
+      }
+      const cagr = countGrowth > 0 ? (sumGrowth / countGrowth) : 0;
+      const combinedRevGrowth = (cagr * 0.5) + (revenueGrowth * 0.5);
+
+      if (combinedRevGrowth >= 0.15) revScore = 5;
+      else if (combinedRevGrowth >= 0.07) revScore = 4;
+      else if (combinedRevGrowth >= 0.02) revScore = 2;
+      else if (combinedRevGrowth >= 0.00) revScore = 1;
+      else revScore = 0;
+      
+      growthAnalysis.push(`Das kombinierte Umsatzwachstum liegt bei ${(combinedRevGrowth * 100).toFixed(1)}% p.a.`);
+    } else {
+      if (revenueGrowth >= 0.15) revScore = 5;
+      else if (revenueGrowth >= 0.07) revScore = 4;
+      else if (revenueGrowth >= 0.02) revScore = 2;
+      else if (revenueGrowth >= 0.00) revScore = 1;
+      else revScore = 0;
+      
+      growthAnalysis.push(`Das aktuelle Umsatzwachstum liegt bei ${(revenueGrowth * 100).toFixed(1)}%.`);
+    }
+    growthScore += revScore;
+
+    // Earnings Growth (Max 5 pts)
+    let earnScore = 2;
+    if (yearlyEarnings.length >= 2) {
+      let sumGrowth = 0;
+      let countGrowth = 0;
+      for (let i = 1; i < yearlyEarnings.length; i++) {
+        const prev = yearlyEarnings[i - 1].earnings;
+        const curr = yearlyEarnings[i].earnings;
+        if (prev > 0) {
+          sumGrowth += (curr - prev) / prev;
+          countGrowth++;
+        }
+      }
+      const cagr = countGrowth > 0 ? (sumGrowth / countGrowth) : 0;
+      const combinedEarnGrowth = (cagr * 0.5) + (earningsGrowth * 0.5);
+
+      if (combinedEarnGrowth >= 0.20) earnScore = 5;
+      else if (combinedEarnGrowth >= 0.08) earnScore = 4;
+      else if (combinedEarnGrowth >= 0.00) earnScore = 2;
+      else earnScore = 0;
+
+      growthAnalysis.push(`Das Gewinnwachstum beträgt ${(combinedEarnGrowth * 100).toFixed(1)}% p.a.`);
+    } else {
+      if (earningsGrowth >= 0.20) earnScore = 5;
+      else if (earningsGrowth >= 0.08) earnScore = 4;
+      else if (earningsGrowth >= 0.00) earnScore = 2;
+      else earnScore = 0;
+
+      growthAnalysis.push(`Das aktuelle Gewinnwachstum beträgt ${(earningsGrowth * 100).toFixed(1)}%.`);
+    }
+    growthScore += earnScore;
+
     analysisBlocks.push(`Wachstum & Qualität (Score: ${growthScore}/25):\n${growthAnalysis.join(' ')}`);
 
     // --- Pillar 3: Valuation & Value (Max 25 pts) ---
     let valuationScore = 0;
     const valAnalysis: string[] = [];
-    
-    if (peRatio === null) {
-      valuationScore += 8;
-      valAnalysis.push(`Ein klassisches Kurs-Gewinn-Verhältnis (KGV) liegt aktuell nicht vor.`);
-    } else if (peRatio <= 0) {
-      valuationScore += 1;
-      valAnalysis.push(`Das Unternehmen schreibt rote Zahlen (KGV negativ: ${peRatio.toFixed(1)}), was das fundamentale Risiko erhöht.`);
-    } else if (peRatio < 15) {
-      valuationScore += 15;
-      valAnalysis.push(`Mit einem KGV von ${peRatio.toFixed(1)} ist die Aktie fundamental günstig bewertet (Value-Profil) und bietet eine solide Sicherheitsmarge.`);
-    } else if (peRatio >= 15 && peRatio <= 30) {
-      if (earningsGrowth >= 0.15) {
-        valuationScore += 12;
-        valAnalysis.push(`Das KGV von ${peRatio.toFixed(1)} ist moderat und wird durch ein starkes Gewinnwachstum von ${(earningsGrowth * 100).toFixed(1)}% (gutes PEG-Verhältnis) solide untermauert.`);
+    let isScaleEnabled = false;
+
+    // P/E and Forward P/E (Max 10 pts)
+    let peScore = 0;
+    if (peRatio === null || peRatio <= 0) {
+      // Unprofitable or missing P/E - Fallback to P/S or P/B (Growth stock friendly)
+      const ps = priceToSales ?? 0;
+      const pb = priceToBook ?? 0;
+      if ((ps > 0 && ps < 2.0) || (pb > 0 && pb < 2.0)) {
+        peScore = 6;
+        valAnalysis.push(`Aufgrund negativer Erträge liegt kein KGV vor. Die Aktie ist jedoch auf Basis des Umsatzes/Buchwertes moderat bewertet (KUV/KBV < 2).`);
+      } else if ((ps > 0 && ps < 5.0) || (pb > 0 && pb < 5.0)) {
+        peScore = 4;
+        valAnalysis.push(`Kein KGV vorhanden. Die Bewertung bezogen auf Umsatz/Buchwert liegt im moderaten Rahmen (KUV/KBV < 5).`);
       } else {
-        valuationScore += 8;
-        valAnalysis.push(`Das KGV von ${peRatio.toFixed(1)} liegt im historischen Durchschnitt, ist jedoch angesichts des geringeren Wachstums nur mäßig geschützt.`);
+        peScore = 1;
+        valAnalysis.push(`Kein KGV vorhanden und die Bewertung bezogen auf KUV/KBV ist hoch, was auf eine Wachstumsprämie hindeutet.`);
       }
     } else {
-      if (earningsGrowth >= 0.25) {
-        valuationScore += 10;
-        valAnalysis.push(`Trotz eines hohen KGVs von ${peRatio.toFixed(1)} ist die Bewertung durch das überdurchschnittliche Gewinnwachstum von ${(earningsGrowth * 100).toFixed(1)}% (Hyper-Wachstum) gestützt.`);
+      const fwdPe = quote?.forwardPE ?? peRatio;
+      if (peRatio < 15 || fwdPe < 12) {
+        peScore = 10;
+        valAnalysis.push(`Die Aktie ist mit einem KGV von ${peRatio.toFixed(1)} (bzw. Forward-KGV von ${fwdPe.toFixed(1)}) fundamental sehr günstig bewertet (Value-Profil).`);
+      } else if (peRatio <= 25 || fwdPe <= 20) {
+        peScore = 7;
+        valAnalysis.push(`Das KGV von ${peRatio.toFixed(1)} liegt auf einem fairen, marktüblichen Niveau.`);
+      } else if (peRatio <= 40 || fwdPe <= 30) {
+        peScore = 4;
+        valAnalysis.push(`Mit einem KGV von ${peRatio.toFixed(1)} ist die Aktie bereits ambitioniert bewertet.`);
       } else {
-        valuationScore += 3;
-        valAnalysis.push(`Die Aktie ist mit einem KGV von ${peRatio.toFixed(1)} ohne entsprechendes Wachstum fundamental überbewertet. Es besteht ein erhöhtes Rückschlagrisiko.`);
+        peScore = 1;
+        valAnalysis.push(`Die Aktie ist mit einem KGV von ${peRatio.toFixed(1)} sehr teuer bewertet.`);
       }
+    }
+    valuationScore += peScore;
+
+    // PEG Ratio (Max 8 pts) with Dynamic Scaling if missing
+    let pegScore = 0;
+    if (pegRatio !== null && pegRatio > 0) {
+      if (pegRatio < 1.0) {
+        pegScore = 8;
+        valAnalysis.push(`Das PEG-Verhältnis (KGV/Wachstum) ist mit ${pegRatio.toFixed(2)} hervorragend (< 1.0), was die Bewertung durch das Wachstum rechtfertigt.`);
+      } else if (pegRatio <= 1.5) {
+        pegScore = 6;
+        valAnalysis.push(`Das PEG-Verhältnis von ${pegRatio.toFixed(2)} ist solide und zeigt eine angemessene Wachstumsbewertung.`);
+      } else if (pegRatio <= 2.5) {
+        pegScore = 3;
+        valAnalysis.push(`Das PEG-Verhältnis von ${pegRatio.toFixed(2)} ist erhöht, das Wachstum deckt die Bewertung nur teilweise.`);
+      } else {
+        pegScore = 1;
+        valAnalysis.push(`Mit einem PEG-Verhältnis von ${pegRatio.toFixed(2)} ist die Aktie gemessen am Wachstum überbewertet.`);
+      }
+      valuationScore += pegScore;
+    } else {
+      isScaleEnabled = true;
+      valAnalysis.push(`Ein PEG-Verhältnis liegt für dieses Wertpapier nicht vor.`);
     }
 
-    if (dividendYield && dividendYield > 0.03) {
-      valuationScore += 10;
-      valAnalysis.push(`Die Dividendenrendite ist mit ${(dividendYield * 100).toFixed(1)}% attraktiv und stützt die Gesamtrendite des Investments.`);
-    } else if (dividendYield && dividendYield >= 0.01) {
-      valuationScore += 7;
-      valAnalysis.push(`Das Unternehmen schüttet eine solide Dividende von ${(dividendYield * 100).toFixed(1)}% aus.`);
-    } else if (dividendYield && dividendYield > 0) {
-      valuationScore += 5;
-      valAnalysis.push(`Das Unternehmen zahlt eine geringe Dividende von ${(dividendYield * 100).toFixed(1)}%.`);
-    } else if (operatingMargin > 0.12) {
-      valuationScore += 5;
-      valAnalysis.push(`Es wird keine Dividende gezahlt, jedoch belegt die hohe operative Profitabilität von ${(operatingMargin * 100).toFixed(1)}%, dass das Unternehmen erhebliche liquide Mittel generiert.`);
+    // Dividend / Cash Flow Yield (Max 7 pts)
+    let divScore = 0;
+    if (dividendYield && dividendYield > 0) {
+      if (dividendYield > 0.04) {
+        divScore = 7;
+        valAnalysis.push(`Die Dividendenrendite ist mit ${(dividendYield * 100).toFixed(1)}% sehr attraktiv und bietet einen starken Puffer.`);
+      } else if (dividendYield >= 0.02) {
+        divScore = 5;
+        valAnalysis.push(`Die Dividendenrendite ist mit ${(dividendYield * 100).toFixed(1)}% auf einem soliden Niveau.`);
+      } else {
+        divScore = 3;
+        valAnalysis.push(`Das Unternehmen zahlt eine geringe Dividende von ${(dividendYield * 100).toFixed(1)}%.`);
+      }
     } else {
-      valuationScore += 2;
-      valAnalysis.push(`Es wird keine nennenswerte Dividende ausgeschüttet und die Cash-Generierung ist moderat.`);
+      if (operatingMargin > 0.15) {
+        divScore = 4;
+        valAnalysis.push(`Es wird keine Dividende gezahlt, jedoch belegt die hohe operative Marge von ${(operatingMargin * 100).toFixed(1)}%, dass das Unternehmen erhebliche Mittel generiert und reinvestiert.`);
+      } else {
+        divScore = 0;
+        valAnalysis.push(`Es wird keine Dividende gezahlt und die Cashflow-Generierung ist gering.`);
+      }
     }
+    valuationScore += divScore;
+
+    // Apply Dynamic Scaling if PEG was missing (to reach max 25 points fairly)
+    if (isScaleEnabled) {
+      const scaledPE = Math.min(15, peScore * 1.5);
+      const scaledDiv = Math.min(10, divScore * 1.4);
+      valuationScore = Math.round(scaledPE + scaledDiv);
+      valAnalysis.push(`(Aufgrund fehlender PEG-Daten wurden KGV und Dividendenstärke gewichtet hochskaliert)`);
+    }
+
     analysisBlocks.push(`Bewertung & Dividende (Score: ${valuationScore}/25):\n${valAnalysis.join(' ')}`);
 
     // --- Pillar 4: Analyst Sentiment (Max 25 pts) ---
     let analystScore = 0;
     const analystAnalysis: string[] = [];
-    
-    if (analystTargetMean === null || analystTargetMean === 0) {
-      analystScore += 8;
-      analystAnalysis.push(`Es liegen keine ausreichenden Analysten-Kursziele vor.`);
-    } else {
-      const upside = ((analystTargetMean - price) / price) * 100;
-      if (upside >= 25) {
-        analystScore += 15;
-        analystAnalysis.push(`Die Konsens-Schätzung der Experten impliziert ein überragendes Kurspotenzial von +${upside.toFixed(1)}% bis zum mittleren Kursziel (${analystTargetMean.toFixed(2)} ${sign}).`);
-      } else if (upside >= 10) {
-        analystScore += 12;
-        analystAnalysis.push(`Die Experten prognostizieren ein solides Aufwärtspotenzial von +${upside.toFixed(1)}% bis zum mittleren Kursziel (${analystTargetMean.toFixed(2)} ${sign}).`);
-      } else if (upside >= 0) {
-        analystScore += 8;
-        analystAnalysis.push(`Der Kurs notiert nahe am Konsensziel der Analysten (Kurspotenzial: +${upside.toFixed(1)}%).`);
-      } else if (upside >= -10) {
-        analystScore += 3;
-        analystAnalysis.push(`Der Kurs ist dem Analysten-Konsens vorausgeeilt (Potenzial: ${upside.toFixed(1)}%). Korrekturen sind kurzfristig möglich.`);
-      } else {
-        analystScore += 0;
-        analystAnalysis.push(`Der Kurs notiert deutlich über dem Expertenziel (Abwärtspotenzial: ${upside.toFixed(1)}%). Die Aktie wird von Analysten als überbewertet eingestuft.`);
-      }
-    }
 
-    if (analystRecommendation) {
+    // Target Upside (Max 12 pts)
+    let upsideScore = 6;
+    if (analystTargetMean && analystTargetMean > 0 && price > 0) {
+      const upside = (analystTargetMean - price) / price;
+      if (upside >= 0.25) {
+        upsideScore = 12;
+        analystAnalysis.push(`Die Konsens-Schätzung der Experten impliziert ein überragendes Kurspotenzial von +${(upside * 100).toFixed(1)}% bis zum mittleren Kursziel (${analystTargetMean.toFixed(2)} ${sign}).`);
+      } else if (upside >= 0.10) {
+        upsideScore = 9;
+        analystAnalysis.push(`Die Experten prognostizieren ein solides Aufwärtspotenzial von +${(upside * 100).toFixed(1)}% bis zum mittleren Kursziel (${analystTargetMean.toFixed(2)} ${sign}).`);
+      } else if (upside >= 0.00) {
+        upsideScore = 6;
+        analystAnalysis.push(`Der Kurs notiert nahe am Konsensziel der Analysten (Kurspotenzial: +${(upside * 100).toFixed(1)}%).`);
+      } else if (upside >= -0.10) {
+        upsideScore = 3;
+        analystAnalysis.push(`Der Kurs ist dem Analysten-Konsens leicht vorausgeeilt (Potenzial: ${(upside * 100).toFixed(1)}%). Korrekturen sind kurzfristig möglich.`);
+      } else {
+        upsideScore = 0;
+        analystAnalysis.push(`Der Kurs notiert deutlich über dem Expertenziel (Abwärtspotenzial: ${(upside * 100).toFixed(1)}%). Die Aktie wird von Analysten als überbewertet eingestuft.`);
+      }
+    } else {
+      analystAnalysis.push(`Es liegen keine Analysten-Kursziele vor.`);
+    }
+    analystScore += upsideScore;
+
+    // Recommendation Mean Score (Max 8 pts)
+    let recScore = 4;
+    if (recommendationMean !== null && recommendationMean > 0) {
+      if (recommendationMean <= 2.0) {
+        recScore = 8;
+        analystAnalysis.push(`Das aggregierte Experten-Votum lautet auf KAUFEN (Rating: ${recommendationMean.toFixed(2)}/5).`);
+      } else if (recommendationMean <= 2.7) {
+        recScore = 6;
+        analystAnalysis.push(`Die Analysten stufen die Aktie mehrheitlich positiv ein (Rating: ${recommendationMean.toFixed(2)}/5).`);
+      } else if (recommendationMean <= 3.3) {
+        recScore = 4;
+        analystAnalysis.push(`Der Analysten-Konsens lautet auf HALTEN (Rating: ${recommendationMean.toFixed(2)}/5).`);
+      } else if (recommendationMean <= 4.0) {
+        recScore = 1;
+        analystAnalysis.push(`Die Experten stufen die Aktie als unterdurchschnittlich ein (Rating: ${recommendationMean.toFixed(2)}/5).`);
+      } else {
+        recScore = 0;
+        analystAnalysis.push(`Die Experten raten mehrheitlich zum VERKAUF (Rating: ${recommendationMean.toFixed(2)}/5).`);
+      }
+    } else if (analystRecommendation) {
       const rec = analystRecommendation.toLowerCase();
       if (['strong_buy', 'strong buy'].some(k => rec.includes(k))) {
-        analystScore += 10;
-        analystAnalysis.push(`Das aggregierte Experten-Votum lautet auf "Strong Buy" (starke Kaufempfehlung).`);
+        recScore = 8;
+        analystAnalysis.push(`Das aggregierte Experten-Votum lautet auf "Strong Buy".`);
       } else if (['buy', 'outperform'].some(k => rec.includes(k))) {
-        analystScore += 8;
-        analystAnalysis.push(`Die Analystengemeinschaft empfiehlt die Aktie mehrheitlich zum Kauf ("Buy/Outperform").`);
+        recScore = 6;
+        analystAnalysis.push(`Die Analystengemeinschaft empfiehlt die Aktie zum Kauf ("Buy").`);
       } else if (rec.includes('hold')) {
-        analystScore += 5;
-        analystAnalysis.push(`Der Konsens lautet auf "Hold" (Halten-Empfehlung).`);
+        recScore = 4;
+        analystAnalysis.push(`Der Konsens lautet auf "Hold" (Halten).`);
       } else if (rec.includes('underperform')) {
-        analystScore += 2;
+        recScore = 1;
         analystAnalysis.push(`Die Experten stufen die Aktie als "Underperform" ein.`);
       } else {
-        analystScore += 0;
-        analystAnalysis.push(`Der Konsens rät mehrheitlich zum Verkauf ("Sell").`);
+        recScore = 0;
+        analystAnalysis.push(`Der Konsens rät zum Verkauf ("Sell").`);
       }
     } else {
-      analystScore += 5;
+      analystAnalysis.push(`Es liegen keine Konsensempfehlungen vor.`);
     }
+    analystScore += recScore;
+
+    // Analyst Coverage / Count (Max 5 pts)
+    let coverageScore = 0;
+    if (analystCount !== null && analystCount > 0) {
+      if (analystCount >= 12) {
+        coverageScore = 5;
+        analystAnalysis.push(`Die Aktie wird von sehr vielen Analysten (${analystCount}) gecovert, was eine hohe Verlässlichkeit der Konsensschätzung bedeutet.`);
+      } else if (analystCount >= 4) {
+        coverageScore = 3;
+        analystAnalysis.push(`Mit ${analystCount} Analystenschätzungen ist die Abdeckung solide.`);
+      } else {
+        coverageScore = 1;
+        analystAnalysis.push(`Die Aktie wird nur von wenigen Analysten (${analystCount}) beobachtet.`);
+      }
+    } else {
+      analystAnalysis.push(`Es liegt keine Analystenabdeckung vor.`);
+    }
+    analystScore += coverageScore;
+
     analysisBlocks.push(`Experten-Konsens & Stimmung (Score: ${analystScore}/25):\n${analystAnalysis.join(' ')}`);
 
     // --- Final Score & Signal calculation ---
@@ -554,6 +748,10 @@ export async function syncStockSignal(symbol: string): Promise<void> {
         rsi,
         ema200,
         score,
+        scoreTrend: technicalScore,
+        scoreGrowth: growthScore,
+        scoreValuation: valuationScore,
+        scoreSentiment: analystScore,
         signal,
         reason,
         analystTargetLow,
@@ -563,7 +761,6 @@ export async function syncStockSignal(symbol: string): Promise<void> {
         analystRecommendation,
         analystCount,
         sector: sector || undefined,
-        // Only override static fields if we actually found something
         country: country ? country : undefined, 
         eps,
         dividendYield,

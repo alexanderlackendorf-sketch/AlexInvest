@@ -17,7 +17,12 @@ interface StockItem {
   rsi: number | null;
   ema200: number | null;
   score: number;
+  scoreTrend: number;
+  scoreGrowth: number;
+  scoreValuation: number;
+  scoreSentiment: number;
   signal: string;
+  reason: string;
   updatedAt: string;
   wkn: string | null;
   isin: string | null;
@@ -124,6 +129,7 @@ export default function StockDetailPage() {
   const [pageLoading, setPageLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [period, setPeriod] = useState<string>('1y');
+  const [showDetailedAnalysis, setShowDetailedAnalysis] = useState(false);
 
   // Chart interactivity states
   const [hoveredPoint, setHoveredPoint] = useState<PriceHistory | null>(null);
@@ -680,6 +686,83 @@ export default function StockDetailPage() {
               )}
             </div>
 
+            {/* Detaillierte Analyse (Collapsible) */}
+            {stock.reason && (
+              <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', borderLeft: '4px solid var(--primary)' }}>
+                <button
+                  onClick={() => setShowDetailedAnalysis(!showDetailedAnalysis)}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    padding: 0,
+                    width: '100%',
+                    textAlign: 'left',
+                    fontWeight: 850,
+                    fontSize: '0.95rem',
+                    letterSpacing: '0.02em',
+                    textTransform: 'uppercase'
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span>📊</span> Detaillierte Pro-Analyse einblenden
+                  </span>
+                  <span style={{ fontSize: '1.25rem', color: 'var(--primary)', transform: showDetailedAnalysis ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s ease' }}>
+                    ▼
+                  </span>
+                </button>
+
+                {showDetailedAnalysis && (
+                  <div style={{
+                    marginTop: '0.5rem',
+                    paddingTop: '1rem',
+                    borderTop: '1px solid var(--border-color)',
+                    fontSize: '0.875rem',
+                    lineHeight: '1.65',
+                    color: 'var(--text-secondary)',
+                    whiteSpace: 'pre-wrap',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '1rem'
+                  }}>
+                    {stock.reason.split('\n\n').map((block, idx) => {
+                      // Highlight headers like "Trend & Momentum (Score: 15/25):"
+                      const isHeader = block.match(/^([A-Za-zÄÖÜäöü\s&]+)\s*\(Score:\s*\d+\/\d+\):/);
+                      const isConclusion = block.startsWith('Gesamtbewertung:');
+                      if (isHeader) {
+                        return (
+                          <div key={idx} style={{ backgroundColor: 'rgba(255,255,255,0.01)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
+                            <strong style={{ color: '#ffffff', display: 'block', marginBottom: '0.5rem', fontSize: '0.95rem' }}>
+                              {isHeader[0]}
+                            </strong>
+                            <p style={{ margin: 0, color: 'var(--text-secondary)' }}>
+                              {block.substring(isHeader[0].length).trim()}
+                            </p>
+                          </div>
+                        );
+                      } else if (isConclusion) {
+                        return (
+                          <div key={idx} style={{ backgroundColor: 'rgba(6,182,212,0.05)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(6,182,212,0.15)', borderLeft: '4px solid var(--primary)' }}>
+                            <strong style={{ color: 'var(--primary)', display: 'block', marginBottom: '0.5rem', fontSize: '0.95rem' }}>
+                              Gesamtbewertung
+                            </strong>
+                            <p style={{ margin: 0, color: '#ffffff', fontWeight: 500 }}>
+                              {block.substring('Gesamtbewertung:'.length).trim()}
+                            </p>
+                          </div>
+                        );
+                      }
+                      return <p key={idx} style={{ margin: 0 }}>{block}</p>;
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
           </div>
 
           {/* Right Side: Score, Key Metrics and Signal History */}
@@ -725,7 +808,8 @@ export default function StockDetailPage() {
                   backgroundColor: 'var(--border-color)', 
                   borderRadius: '99px',
                   overflow: 'hidden',
-                  position: 'relative'
+                  position: 'relative',
+                  marginBottom: '1.5rem'
                 }}>
                   <div style={{
                     position: 'absolute',
@@ -736,6 +820,44 @@ export default function StockDetailPage() {
                     backgroundColor: getScoreColor(stock.score),
                     transition: 'var(--transition-smooth)'
                   }} />
+                </div>
+              )}
+
+              {/* Pillars Breakdown */}
+              {stock.price > 0 && (
+                <div style={{
+                  width: '100%',
+                  borderTop: '1px solid var(--border-color)',
+                  paddingTop: '1.25rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.85rem',
+                  textAlign: 'left'
+                }}>
+                  <span style={{ fontSize: '0.675rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem', display: 'block' }}>
+                    Säulen-Aufschlüsselung (je max. 25 Pkt)
+                  </span>
+
+                  {[
+                    { label: '📈 Trend & Momentum', val: stock.scoreTrend || 0 },
+                    { label: '🛡️ Qualität & Wachstum', val: stock.scoreGrowth || 0 },
+                    { label: '📊 Bewertung & Dividende', val: stock.scoreValuation || 0 },
+                    { label: '🎯 Experten-Stimmung', val: stock.scoreSentiment || 0 }
+                  ].map((pillar, i) => {
+                    const pct = (pillar.val / 25) * 100;
+                    const color = pillar.val >= 17 ? 'var(--buy-green)' : pillar.val < 10 ? 'var(--sell-red)' : 'var(--hold-amber)';
+                    return (
+                      <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                          <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>{pillar.label}</span>
+                          <strong style={{ color: color }}>{pillar.val.toFixed(0)} / 25</strong>
+                        </div>
+                        <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '99px', overflow: 'hidden' }}>
+                          <div style={{ width: `${pct}%`, height: '100%', backgroundColor: color, borderRadius: '99px', transition: 'width 0.4s ease' }} />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
