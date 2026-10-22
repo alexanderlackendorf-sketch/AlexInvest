@@ -16,7 +16,9 @@ from . import fetch
 
 log = logging.getLogger(__name__)
 
-UA = {"User-Agent": os.environ.get("SEC_USER_AGENT", "AlexInvest-Screener github.com/alexanderlackendorf-sketch/AlexInvest")}
+# Die SEC verlangt "Name E-Mail" im User-Agent, sonst 403. Eigene Adresse über das Secret SEC_USER_AGENT setzen.
+UA = {"User-Agent": os.environ.get("SEC_USER_AGENT") or "AlexInvest Screener alexinvest-screener@users.noreply.github.com",
+      "Accept-Encoding": "gzip, deflate"}
 REVENUE_CONCEPTS = [
     "RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet",
     "RevenueFromContractWithCustomerIncludingAssessedTax",
@@ -112,16 +114,18 @@ def verify_company(symbol: str, cik: int) -> dict:
     return res
 
 
-def refresh(universe: list[dict], cache: dict, max_checks: int = 120) -> dict:
-    """Aktualisiert den SEC-Cache rollierend. Ändert und liefert `cache`."""
+def refresh(universe: list[dict], cache: dict, max_checks: int = 120) -> tuple[dict, list[str]]:
+    """Aktualisiert den SEC-Cache rollierend. Liefert (cache, Warnungen)."""
+    errors: list[str] = []
     # US-Notierungen haben bei Yahoo kein Börsensuffix (20-F-Filer liefern keine 10-K-Daten -> Status bleibt offen)
     us = [u for u in universe if "." not in u["symbol"]]
     if not us:
-        return cache
+        return cache, errors
     try:
         cmap = ticker_cik_map()
     except Exception as e:  # noqa: BLE001
         log.warning("SEC Tickerliste nicht abrufbar: %s", e)
+        errors.append(f"SEC-Tickerliste nicht abrufbar: {e}")
         cmap = {}
     today = dt.date.today()
 
@@ -138,5 +142,8 @@ def refresh(universe: list[dict], cache: dict, max_checks: int = 120) -> dict:
             cache[u["symbol"]] = verify_company(u["symbol"], int(cik))
         except Exception as e:  # noqa: BLE001
             log.warning("SEC-Prüfung %s fehlgeschlagen: %s", u["symbol"], e)
+            errors.append(f"{u['symbol']}: {e}")
         time.sleep(0.25)
-    return cache
+    if errors:
+        errors = [f"SEC-Abgleich: {len(errors)} Fehler, z.B. {errors[0]}"]
+    return cache, errors

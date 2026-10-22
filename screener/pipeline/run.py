@@ -147,7 +147,8 @@ def main(argv=None):
     # --- SEC-Abgleich (US) ---
     sec_cache = _load(state / "sec_cache.json", {})
     if not args.skip_sec:
-        sec_cache = sec.refresh(uni, sec_cache, max_checks=args.sec_max)
+        sec_cache, sec_warn = sec.refresh(uni, sec_cache, max_checks=args.sec_max)
+        warnings += sec_warn
         _save(state / "sec_cache.json", sec_cache)
 
     # --- Historie & Score-Veränderung ---
