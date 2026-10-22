@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="de" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlexInvest Screener</title>
+<meta name="description" content="Täglich aktualisierter Aktienscreener: S&P 500, DAX und globale Qualitätswerte mit Rating 1–10.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230b0f14'/><path d='M6 22l6-7 5 4 9-11' stroke='%233987e5' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">AX</span>
+    <span class="brand-name">ALEXINVEST <span class="muted">//</span> EQUITY SCREENER</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="screener" role="tab">Screener</button>
+    <button class="tab" data-view="movers" role="tab">Score-Movers</button>
+    <button class="tab" data-view="watch" role="tab">Watchlist</button>
+    <button class="tab" data-view="method" role="tab">Methodik &amp; Daten</button>
+  </nav>
+  <div class="status">
+    <span id="health" class="health"><i></i><span>lade…</span></span>
+    <button id="themeBtn" class="icon-btn" title="Hell/Dunkel umschalten" aria-label="Theme umschalten">◐</button>
+  </div>
+</header>
+
+<main>
+  <section class="kpis" id="kpis"></section>
+
+  <section id="view-screener" class="view">
+    <div class="presets" id="presets"></div>
+    <div class="filters">
+      <input id="q" type="search" placeholder="Suche: Name, Symbol, Branche…" autocomplete="off">
+      <select id="fIndex"><option value="">Alle Indizes</option></select>
+      <select id="fRegion"><option value="">Alle Regionen</option></select>
+      <select id="fSector"><option value="">Alle Sektoren</option></select>
+      <label class="num">Score ≥ <input id="fScore" type="number" min="1" max="10" step="0.5" value=""></label>
+      <label class="num">KGV fwd ≤ <input id="fPe" type="number" min="0" step="1" value=""></label>
+      <label class="num">MCap ≥ <input id="fCap" type="number" min="0" step="1" value=""> Mrd €</label>
+      <label class="chk"><input id="fZone" type="checkbox"> in Buy-Zone</label>
+      <label class="chk"><input id="fClean" type="checkbox"> ohne Daten-Warnungen</label>
+      <button id="reset" class="ghost">Zurücksetzen</button>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="table-wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+  </section>
+
+  <section id="view-movers" class="view" hidden>
+    <div class="grid2">
+      <div class="panel"><h3>Größte Score-Aufsteiger (1 Woche)</h3><table class="mini" id="upW"></table></div>
+      <div class="panel"><h3>Größte Score-Absteiger (1 Woche)</h3><table class="mini" id="dnW"></table></div>
+      <div class="panel"><h3>Aufsteiger (1 Monat)</h3><table class="mini" id="upM"></table></div>
+      <div class="panel"><h3>Score ≥ 7 und in Buy-Zone</h3><table class="mini" id="zoneList"></table></div>
+    </div>
+  </section>
+
+  <section id="view-watch" class="view" hidden>
+    <p class="muted small">Watchlist wird lokal in diesem Browser gespeichert (★ in der Tabelle setzen).</p>
+    <div class="table-wrap"><table id="tblWatch"><thead></thead><tbody></tbody></table></div>
+  </section>
+
+  <section id="view-method" class="view" hidden>
+    <div class="grid2">
+      <div class="panel" id="health-panel"></div>
+      <div class="panel" id="method-panel"></div>
+    </div>
+  </section>
+</main>
+
+<aside id="drawer" class="drawer" hidden aria-modal="true" role="dialog">
+  <div class="drawer-inner" id="drawerBody"></div>
+</aside>
+<div id="scrim" class="scrim" hidden></div>
+<div id="toast" class="toast" hidden></div>
+
+<footer class="foot">
+  Daten: Yahoo Finance, SEC EDGAR, Wikipedia · Rating = regelbasiertes Modell, keine Anlageberatung · Fehlende Werte werden nicht geschätzt (—).
+</footer>
+</body>
+</html>

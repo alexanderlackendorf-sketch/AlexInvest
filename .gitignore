@@ -42,3 +42,8 @@ next-env.d.ts
 
 /src/generated/prisma
 /dev.db
+
+# screener
+__pycache__/
+/state/
+/site/

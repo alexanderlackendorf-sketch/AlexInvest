@@ -1,0 +1,90 @@
+name: Screener
+
+on:
+  schedule:
+    - cron: "17 22 * * 1-5"   # Mo–Fr 22:17 UTC (nach US-Börsenschluss)
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Nur die ersten N Aktien (Test, leer = alle)"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths: ["screener/web/**"]   # nur Oberfläche neu ausliefern, ohne Datenlauf
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: screener
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Letzten Datenstand laden (Branch screener-data)
+        run: |
+          git clone --depth 1 --branch screener-data \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state \
+            || mkdir -p state
+          rm -rf state/.git
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: screener/requirements.txt
+
+      - name: Abhängigkeiten
+        run: pip install -r screener/requirements.txt
+
+      - name: Tests
+        run: python -m unittest discover -s screener/tests -t .
+
+      - name: Datenlauf
+        if: github.event_name != 'push'
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'AlexInvest-Screener github.com/alexanderlackendorf-sketch/AlexInvest' }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.limit }}" ]; then ARGS="--limit ${{ github.event.inputs.limit }} --sec-max 10"; fi
+          python -m screener.pipeline.run --state state $ARGS
+
+      - name: Datenstand sichern (ein Commit, ohne Historie -> Repo bleibt klein)
+        if: github.event_name != 'push'
+        run: |
+          cd state
+          git init -q -b screener-data
+          git add -A
+          git -c user.name="screener-bot" -c user.email="actions@users.noreply.github.com" \
+            commit -qm "Datenstand $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" screener-data
+          rm -rf .git
+
+      - name: Website zusammenbauen
+        run: |
+          mkdir -p site
+          cp -r screener/web/. site/
+          if [ -d state/public ]; then cp -r state/public site/data; fi
+          touch site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
