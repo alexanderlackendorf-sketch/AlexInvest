@@ -179,6 +179,10 @@ def main(argv=None):
             same_cur = r.get("currency") == r.get("financial_currency")
         else:
             years, source, same_cur = [], None, False
+        if years and r.get("shares_out"):
+            years = [dict(y) for y in years]  # Cache nicht verändern
+            if history.adjust_for_recent_split(years, r["shares_out"], r.get("eps_ttm")):
+                r["flags"].append("split_nach_bericht_bereinigt")
         h = history.derive(years, px_adj[s]["Close"], same_currency=same_cur)
         # Normalisiertes KGV: Kurs (in Berichtswährung der Historie) / Ø-EPS 5 J.
         hist_cur = "USD" if source == "SEC 10-K" else r.get("financial_currency")

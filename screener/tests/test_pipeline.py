@@ -275,6 +275,16 @@ class HistoryTest(unittest.TestCase):
         self.assertAlmostEqual(ys[0]["eps"], 1.0)
         self.assertAlmostEqual(ys[1]["shares"], 1000.0)
 
+    def test_split_after_last_report(self):
+        ys = [{"fy_end": f"{y}-12-31", "eps": 200.0, "shares": 33.0} for y in (2023, 2024, 2025)]
+        self.assertEqual(history.adjust_for_recent_split(ys, 33.0 * 23, eps_ttm=9.0), 25)   # Booking 25:1 + Rückkäufe
+        self.assertAlmostEqual(ys[0]["eps"], 8.0)
+        self.assertIsNone(history.adjust_for_recent_split([{"shares": 100.0, "eps": 1.0}], 97.0, 1.0))  # Rückkauf
+        # Aktienzahl verdoppelt (zweite Gattung), EPS aber unverändert -> kein Split
+        self.assertIsNone(history.adjust_for_recent_split([{"shares": 153.0, "eps": 10.0}], 306.0, 9.5))
+        # Alphabet: gehandelte Gattung = halbe Gesamtzahl, EPS-Verhältnis zufällig ~0,5 -> kein Split
+        self.assertIsNone(history.adjust_for_recent_split([{"shares": 12.2e9, "eps": 10.8}], 5.8e9, 19.9))
+
     def test_hist_pe(self):
         idx = pd.bdate_range("2019-01-01", "2026-06-30")
         close = pd.Series(30.0, index=idx)
