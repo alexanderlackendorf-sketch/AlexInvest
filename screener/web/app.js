@@ -21,6 +21,7 @@ const FLAG_TEXT = {
   zyklik_spitzengewinn: "Zyklische Branche mit möglichem Spitzengewinn – niedriges KGV kann täuschen; ohne Mehrjahresdaten keine Normalisierung möglich",
   zyklik_normalisiert: "Zyklische Branche mit möglichem Spitzengewinn – Bewertung daher über den normalisierten Gewinn (aktueller Umsatz × Median-Nettomarge 5 J.) statt über das aktuelle KGV",
   zahlen_in_kuerze: "Quartalszahlen in den nächsten 7 Tagen – Einstieg erst danach prüfen (Kurslücken-Risiko)",
+  split_nach_bericht_bereinigt: "Aktiensplit nach dem letzten Jahresbericht – historische EPS/Aktienzahlen entsprechend bereinigt",
   value_trap_risiko: "Value-Trap-Risiko: billig bewertet, aber Umsatz rückläufig und Kurs im Abwärtstrend",
 };
 const AMPEL = { gruen: "🟢", gelb: "🟡", rot: "🔴", grau: "⚪" };

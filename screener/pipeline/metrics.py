@@ -211,6 +211,7 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
     m["price_time"] = (dt.datetime.fromtimestamp(ts, dt.timezone.utc).isoformat(timespec="minutes")
                        if ts and ts > 1e9 else None)
     m["exchange"] = info.get("fullExchangeName") or info.get("exchange")
+    m["shares_out"] = shares
     m["price"] = price
     m["currency"] = cur
     m["financial_currency"] = fin_cur

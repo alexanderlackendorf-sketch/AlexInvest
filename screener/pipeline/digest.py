@@ -40,9 +40,10 @@ def why(r) -> str:
     parts = []
     if r.get("roic_med5") is not None:
         parts.append(f"ROIC 5J {_p(r['roic_med5'], 0, False)}")
-    if r.get("pe_fwd") is not None:
-        h = f" ({_p(r['pe_vs_hist'])} vs. Historie)" if r.get("pe_vs_hist") is not None else ""
-        parts.append(f"KGV fwd {_n(r['pe_fwd'])}{h}")
+    if r.get("pe_ttm") is not None and r.get("pe_vs_hist") is not None:
+        parts.append(f"KGV {_n(r['pe_ttm'])} ({_p(r['pe_vs_hist'], 0)} vs. eigenem 5J-Median)")
+    elif r.get("pe_fwd") is not None:
+        parts.append(f"KGV fwd {_n(r['pe_fwd'])}")
     if r.get("rev_cagr") is not None:
         parts.append(f"Umsatz 5J {_p(r['rev_cagr'], 0)} p.a.")
     if r.get("rev_eps_90d") is not None:
@@ -96,7 +97,7 @@ def build(data: dict, prev: dict, watch: list[str], site: str, mention: str | No
         md += [f"### ↘️ Nicht mehr Kandidat ({len(lost_c)})", ""]
         md += (table(lost_c[:15], site, ("Neues Urteil", lambda r: r["verdict"])) if lost_c else ["Keine."]) + [""]
 
-    md += [f"### 🎯 Neu in Buy-Zone 1 (Kandidat/Beobachten, {len(new_zone)})", ""]
+    md += [f"### 🎯 {'Aktuell' if first else 'Neu'} in Buy-Zone 1 (Kandidat/Beobachten, {len(new_zone)})", ""]
     md += (table(new_zone[:15], site, ("Urteil", lambda r: r["verdict"])) if new_zone else ["Keine."]) + [""]
 
     md += ["### 👁 Watchlist", ""]

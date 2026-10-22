@@ -102,7 +102,7 @@ CYCLICAL_INDUSTRY_KEYWORDS = ("semiconductor", "auto", "steel", "chemical", "air
                               "building materials", "lumber", "homebuilding", "residential construction",
                               "trucking", "computer hardware")
 CYCLE_DROP = -0.15
-WARN_FLAG_EXCLUDE = {"waehrung_umgerechnet", "zyklik_normalisiert", "zahlen_in_kuerze"}
+WARN_FLAG_EXCLUDE = {"waehrung_umgerechnet", "zyklik_normalisiert", "zahlen_in_kuerze", "split_nach_bericht_bereinigt"}
 
 
 def ampel(v) -> str:

@@ -73,18 +73,44 @@ def _instant_records(gaap: dict, concept: str) -> dict[str, float]:
     return {k: v for k, (_, v) in best.items()}
 
 
-SPLIT_FACTORS = (2, 3, 4, 5, 8, 10, 15, 20, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 10, 1 / 20)
+SPLIT_FACTORS = (2, 3, 4, 5, 8, 10, 15, 20, 25, 30, 40, 50, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 8, 1 / 10, 1 / 20, 1 / 25)
+
+
+def split_factor_between(old_shares, new_shares, tol: float = 0.06):
+    if not old_shares or not new_shares:
+        return None
+    ratio = new_shares / old_shares
+    return next((f for f in SPLIT_FACTORS if abs(ratio / f - 1) < tol), None)
+
+
+def adjust_for_recent_split(years: list[dict], shares_now, eps_ttm=None) -> float | None:
+    """Split NACH dem letzten Jahresbericht: aktuelle Aktienzahl (gehandelte Gattung) vs. verwässerte
+    Aktienzahl des letzten Berichtsjahres. Bestätigung über das EPS: letztes Jahres-EPS / aktuelles EPS
+    muss grob zum Faktor passen (Gewinnänderung seither erlaubt: 0,6- bis 1,6-fach)."""
+    if not years or not eps_ttm or eps_ttm <= 0:
+        return None
+    # 12 % Toleranz: seit dem Bericht können Rückkäufe/Ausgaben dazugekommen sein (Split-Faktoren liegen
+    # mindestens Faktor 2 auseinander, eine Verwechslung ist damit ausgeschlossen)
+    f = split_factor_between(years[-1].get("shares"), shares_now, tol=0.12)
+    eps_fy = years[-1].get("eps")
+    # Nur normale Splits: ein scheinbarer Reverse-Split ist bei großen Werten fast immer eine
+    # Mehrfach-Gattung (z.B. Alphabet A/C), deren Teil-Aktienzahl kleiner ist als die Gesamtzahl
+    if f is None or f < 2 or not eps_fy or eps_fy <= 0 or not 0.6 * f <= eps_fy / eps_ttm <= 1.6 * f:
+        return None
+    for y in years:
+        if y.get("shares"):
+            y["shares"] *= f
+        if y.get("eps") is not None:
+            y["eps"] /= f
+        y["split_adjusted"] = True
+    return f
 
 
 def split_adjust(years: list[dict]) -> list[dict]:
     """Ältere Jahresberichte enthalten EPS/Aktienzahl vor späteren Splits. Springt die verwässerte
     Aktienzahl zwischen zwei Jahren genau um einen Split-Faktor, werden alle früheren Jahre angepasst."""
     for i in range(len(years) - 1, 0, -1):
-        a, b = years[i - 1].get("shares"), years[i].get("shares")
-        if not a or not b:
-            continue
-        ratio = b / a
-        f = next((f for f in SPLIT_FACTORS if abs(ratio / f - 1) < 0.06), None)
+        f = split_factor_between(years[i - 1].get("shares"), years[i].get("shares"))
         if f is None:
             continue
         for y in years[:i]:
