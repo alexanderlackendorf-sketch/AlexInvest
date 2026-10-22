@@ -34,12 +34,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Letzten Datenstand laden (Branch screener-data)
+      - name: Letzten Datenstand laden (Branch screener-data, notfalls aus dem Backup)
         run: |
-          git clone --depth 1 --branch screener-data \
-            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state \
-            || mkdir -p state
+          URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git clone --depth 1 --branch screener-data "$URL" state || mkdir -p state
           rm -rf state/.git
+          if [ ! -f state/tracking.json ] && git ls-remote --exit-code --heads "$URL" screener-backup >/dev/null; then
+            echo "Datenstand ohne Erfolgskontrolle -> Wiederherstellung aus screener-backup"
+            git clone -q --depth 1 --branch screener-backup "$URL" restore && cp restore/*.json state/ && rm -rf restore
+          fi
+          # Kopie der unersetzlichen Dateien für die Verlustprüfung vor dem Überschreiben
+          mkdir -p state_prev && cp state/*.json state_prev/ 2>/dev/null || true
 
       - uses: actions/setup-python@v5
         with:
@@ -60,7 +65,7 @@ jobs:
         run: |
           ARGS=""
           if [ -n "${{ github.event.inputs.limit }}" ]; then ARGS="--limit ${{ github.event.inputs.limit }} --sec-max 10"; fi
-          python -m screener.pipeline.run --state state $ARGS
+          python -m screener.pipeline.run --state state --alarm-file alarm.md $ARGS
 
       - name: Wochen-Digest (freitags oder manuell) als Issue-Kommentar -> GitHub verschickt die E-Mail
         if: github.event_name != 'push'
@@ -83,6 +88,49 @@ jobs:
             NUM="${URL##*/}"
           fi
           gh issue comment "$NUM" --body-file digest.md
+
+      - name: Datenqualitäts-Alarm als Issue-Kommentar (-> E-Mail)
+        if: github.event_name != 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -s alarm.md ] || { echo "Kein Alarm"; exit 0; }
+          printf '\n\n@%s\n' "${{ github.repository_owner }}" >> alarm.md
+          gh label create screener-alarm --color d73a4a --description "Datenqualitäts-Alarm des Screeners" --force
+          NUM=$(gh issue list --label screener-alarm --state open --json number --jq '.[0].number // empty')
+          if [ -z "$NUM" ]; then
+            URL=$(gh issue create --title "⚠️ Screener-Alarm" --label screener-alarm \
+              --body "Hier meldet der Screener auffällige Einbrüche der Datenqualität (z.B. geänderte Yahoo-Felder).")
+            NUM="${URL##*/}"
+          fi
+          gh issue comment "$NUM" --body-file alarm.md
+
+      - name: Verlustprüfung (Erfolgskontrolle, Score-Historie dürfen nicht verloren gehen)
+        if: github.event_name != 'push'
+        run: python -m screener.pipeline.guard --old state_prev --new state
+
+      - name: Wöchentliches Backup der unersetzlichen Daten (Branch screener-backup, mit Historie)
+        if: github.event_name != 'push'
+        continue-on-error: true
+        run: |
+          URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          if git ls-remote --exit-code --heads "$URL" screener-backup >/dev/null; then
+            if [ "$(date -u +%u)" != "5" ] && [ "${{ github.event.inputs.digest }}" != "true" ]; then
+              echo "Kein Backup-Tag"; exit 0
+            fi
+            git clone -q --depth 1 --branch screener-backup "$URL" backup
+          else
+            mkdir backup && git -C backup init -q -b screener-backup
+          fi
+          for f in tracking.json history.json verdicts.json digest_state.json; do
+            [ -f "state/$f" ] && cp "state/$f" backup/
+          done
+          cd backup
+          git add -A
+          git -c user.name="screener-bot" -c user.email="actions@users.noreply.github.com" \
+            commit -qm "Backup $(date -u +%Y-%m-%d)" || { echo "Keine Änderung"; exit 0; }
+          git push -q "$URL" screener-backup
 
       - name: Datenstand sichern (ein Commit, ohne Historie -> Repo bleibt klein)
         if: github.event_name != 'push'

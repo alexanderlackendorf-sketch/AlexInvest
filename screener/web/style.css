@@ -219,6 +219,7 @@ table.mini tr { cursor: pointer; }
 .metrics td { padding: 4px 6px; font-size: 12px; }
 .metrics td:first-child { text-align: left; color: var(--text-secondary); }
 .metrics td.l.small { white-space: normal; min-width: 140px; }
+.metrics td .peer-verdict { display: inline-block; white-space: normal; max-width: 150px; text-align: right; line-height: 1.3; }
 .pct { display: inline-block; width: 60px; height: 6px; background: var(--surface-2); border-radius: 3px; vertical-align: middle; position: relative; }
 .pct > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
 .zone-card { border: 1px dashed color-mix(in srgb, var(--good) 60%, transparent); background: var(--zone); border-radius: 6px; padding: 8px 10px; margin: 6px 0; font-size: 12px; }
