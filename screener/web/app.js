@@ -16,7 +16,7 @@ const FLAG_TEXT = {
   dividende_unplausibel: "Dividendenrendite unplausibel – verworfen",
   kursziel_unplausibel: "Analysten-Kursziel unplausibel – verworfen",
   kurs_vs_schluss_abweichung: "Live-Kurs weicht >25 % vom letzten Schlusskurs ab",
-  sec_abweichung: "Yahoo-Zahlen weichen >5 % vom SEC-10-K ab",
+  sec_abweichung: "Nettogewinn oder EPS bei Yahoo weichen >5 % vom SEC-10-K ab",
 };
 const flagText = (f) => f.startsWith("fundamentaldaten_vom_")
   ? `Fundamentaldaten vom ${f.slice(21)} (heutiger Abruf fehlgeschlagen)`
@@ -99,7 +99,7 @@ const COLS = [
 const warnFlags = (r) => (r.flags || []).filter(isWarnFlag);
 function dataCell(r) {
   const w = warnFlags(r);
-  const sec = r.sec && r.sec.status === "bestaetigt" ? '<span class="tag zone" title="Umsatz/Gewinn mit SEC-10-K abgeglichen">SEC ✓</span>' : "";
+  const sec = r.sec && r.sec.status === "bestaetigt" ? '<span class="tag zone" title="Nettogewinn und EPS mit SEC-10-K abgeglichen">SEC ✓</span>' : "";
   return sec + (w.length ? `<span class="tag warn" title="${esc(w.map(flagText).join("\n"))}">⚠ ${w.length}</span>` : (sec ? "" : '<span class="dash">ok</span>'));
 }
 
@@ -334,7 +334,7 @@ function method() {
     <ul class="small">
       <li>Kein Wert wird geschätzt oder aufgefüllt. Fehlt eine Kennzahl, entfällt ihr Gewicht (Datenabdeckung wird ausgewiesen).</li>
       <li>KGV, KBV und EV/EBITDA werden selbst aus Kurs und Bilanzdaten berechnet (Währung angeglichen) und mit Yahoo abgeglichen. Widersprechen sie sich, wird der Wert verworfen.</li>
-      <li>US-Werte: Umsatz, Gewinn und EPS werden rollierend gegen den 10-K bei der SEC geprüft.</li>
+      <li>US-Werte: Nettogewinn und EPS werden rollierend gegen den 10-K bei der SEC geprüft (Toleranz 5 %). Der Umsatz wird nur informativ verglichen, weil er je nach Branche unterschiedlich definiert ist.</li>
       <li>Verlustbringer bekommen bei KGV das schlechteste Perzentil.</li>
       <li>Fällt ein Abruf aus, werden Fundamentaldaten bis 10 Tage alt weiterverwendet und markiert.</li>
     </ul>
@@ -394,7 +394,7 @@ function openDetail(sym) {
         const x = sec[k] || {}; return `<tr><td>${l}</td><td class="n">${f(x.sec)}</td><td class="n">${f(x.yahoo)}</td><td class="n">${isNum(x.dev) ? pctPlain(x.dev, 1) : dash}</td></tr>`;
       }).join("")}
     </table>
-    <div class="${sec.status === "bestaetigt" ? "ok-line" : "flag-list"}">${sec.status === "bestaetigt" ? "✓ Abweichung ≤ 5 % – bestätigt" : "⚠ Abweichung > 5 % – Yahoo-Werte mit Vorsicht"} · geprüft ${esc(sec.checked)} · <a href="${esc(sec.url)}" target="_blank" rel="noopener">Filings</a></div>`
+    <div class="${sec.status === "bestaetigt" ? "ok-line" : "flag-list"}">${sec.status === "bestaetigt" ? "✓ Gewinn & EPS: Abweichung ≤ 5 % – bestätigt" : "⚠ Gewinn oder EPS weichen > 5 % ab – Yahoo-Werte mit Vorsicht"} · geprüft ${esc(sec.checked)} · <a href="${esc(sec.url)}" target="_blank" rel="noopener">Filings</a></div>`
     : `<div class="note">SEC: ${esc(sec.status.replace(/_/g, " "))} (geprüft ${esc(sec.checked)})</div>`;
 
   $("#drawerBody").innerHTML = `
