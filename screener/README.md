@@ -17,7 +17,9 @@ GitHub Actions (Mo–Fr 22:17 UTC)
        history.py    Mehrjahres-Historie (SEC bis 10 J., sonst Yahoo): ROIC, Margen, Cash Conversion, Verwässerung
        tracking.py   Erfolgskontrolle: wöchentliche Kohorten vs. Universum, S&P 500, DAX
        digest.py     Wochen-Digest (freitags) als Kommentar im Issue „📬 Screener-Digest“ -> E-Mail über GitHub
+       guard.py      Verlustprüfung: Erfolgskontrolle/Score-Historie dürfen beim Überschreiben nicht verloren gehen
   └─ Datenstand  -> Branch `screener-data` (ein einziger Commit, wird überschrieben)
+  └─ Backup      -> Branch `screener-backup` (wöchentlich, mit Historie: Erfolgskontrolle, Score-Verläufe)
   └─ Website     -> GitHub Pages (screener/web + Daten)
 ```
 
@@ -38,6 +40,13 @@ python -m screener.pipeline.run --state state --limit 30 --sec-max 5  # Probelau
 mkdir -p site && cp -r screener/web/. site/ && cp -r state/public site/data
 python -m http.server -d site 8000
 ```
+
+## Absicherung
+
+- **Verlustprüfung**: Vor dem Überschreiben des Datenstands wird geprüft, dass keine Kohorte der Erfolgskontrolle und keine Score-Historie verloren geht. Sonst bricht der Lauf ab, der alte Stand bleibt erhalten und GitHub meldet den Fehler per Mail.
+- **Backup**: Freitags werden die unersetzlichen Dateien in den Branch `screener-backup` gesichert, mit voller Historie. Fehlen sie im Datenstand, werden sie beim nächsten Lauf automatisch von dort wiederhergestellt.
+- **Datenqualitäts-Wächter**: Fällt die Abdeckung einer wichtigen Kennzahl gegenüber dem Vortag auf unter 75 %, etwa weil Yahoo ein Feld geändert hat, kommt ein Kommentar im Issue „⚠️ Screener-Alarm“ und damit eine Mail.
+- **Tests**: Jeder Pull Request auf `screener/**` lässt die Unit-Tests laufen (Workflow „Screener-Tests“).
 
 ## Wochen-Digest und Watchlist
 

@@ -14,7 +14,7 @@ import pandas as pd
 
 import datetime as dt
 
-from screener.pipeline import digest, history, metrics, run, scoring, sec, technicals, targets, tracking
+from screener.pipeline import digest, guard, history, metrics, run, scoring, sec, technicals, targets, tracking
 
 SECTORS = ["Technology", "Healthcare", "Financial Services", "Industrials", "Energy"]
 
@@ -224,6 +224,41 @@ class PackageFourTest(unittest.TestCase):
         rows[0]["verdict_code"], rows[0]["verdict"] = "beobachten", "Beobachten"
         md2, _ = digest.build(data, st, ["B"], "https://x/", None, dt.date(2026, 10, 30))
         self.assertIn("Nicht mehr Kandidat (1)", md2)
+
+
+class SafetyTest(unittest.TestCase):
+    """Verlustschutz des Datenstands und Datenqualitäts-Wächter."""
+
+    def _write(self, d, files):
+        d.mkdir(parents=True, exist_ok=True)
+        for k, v in files.items():
+            (d / k).write_text(json.dumps(v))
+
+    def test_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new = Path(tmp) / "old", Path(tmp) / "new"
+            base = {"tracking.json": {"snapshots": {"2026-10-22": {}, "2026-10-29": {}}},
+                    "history.json": {f"S{i}": [["d", 5.0]] * 10 for i in range(100)},
+                    "verdicts.json": {f"S{i}": "beobachten" for i in range(100)}}
+            self._write(old, base)
+            self._write(new, base)
+            self.assertEqual(guard.check(old, new), [])
+            self._write(new, {"tracking.json": {"snapshots": {"2026-10-29": {}}}})
+            self.assertTrue(any("Kohorte" in p for p in guard.check(old, new)))
+            self._write(new, {"tracking.json": base["tracking.json"], "history.json": {"S1": [["d", 5.0]]}})
+            self.assertTrue(any("history.json" in p for p in guard.check(old, new)))
+            # leerer Altstand (erster Lauf) -> keine Beanstandung
+            self.assertEqual(guard.check(Path(tmp) / "leer", new), [])
+
+    def test_quality_alarms(self):
+        prev = {"metric_coverage": {"pe_ttm": 0.9, "rev_eps_90d": 0.95, "roic_med5": 0.2}, "rows": 620, "rated": 615}
+        ok = {"metric_coverage": {"pe_ttm": 0.88, "rev_eps_90d": 0.94, "roic_med5": 0.05}, "rows": 618, "rated": 612}
+        self.assertEqual(run.quality_alarms(prev, ok), [])   # roic unter 30 % Basis -> nicht überwacht
+        bad = {"metric_coverage": {"pe_ttm": 0.88, "rev_eps_90d": 0.10}, "rows": 500, "rated": 490}
+        alarms = run.quality_alarms(prev, bad)
+        self.assertEqual(len(alarms), 3)
+        self.assertIn("rev_eps_90d", alarms[0])
+        self.assertIn("⚠️", run.alarm_markdown(alarms, {"generated_at": "2026-10-23T22:30:00"}))
 
 
 class HistoryTest(unittest.TestCase):

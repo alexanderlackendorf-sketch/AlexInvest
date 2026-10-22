@@ -7,8 +7,9 @@ Methode: Multiplikator auf Forward-EPS [BERECHNET aus SCHÄTZUNGEN].
   - Szenarien unterscheiden sich in operativen Annahmen (EPS-Wachstum) und im Multiplikator:
       Bear: Wachstum -10 Pp., KGV x0,8   Base: Konsenswachstum   Bull: Wachstum +5 Pp., KGV x1,15
   - Wachstum gedeckelt auf [-15 %, +25 %] p.a., abnehmend (100 % / 80 % / 60 %)
-Nur für profitable Unternehmen mit Forward-EPS. Zykliker im möglichen Spitzengewinn werden über den
-normalisierten Gewinn (Ø 5 J.) und ihr eigenes historisches Median-KGV bewertet; ohne Mehrjahresdaten,
+Nur für profitable Unternehmen mit Forward-EPS. Belegte Zykliker im möglichen Spitzengewinn werden über den
+normalisierten Gewinn (aktueller Umsatz × Median-Nettomarge 5 J. / Aktienzahl) und ihr eigenes historisches
+Median-KGV bewertet, mit Wachstum aus der Umsatz-CAGR (gedeckelt -5 … +8 %). Ohne Mehrjahresdaten,
 bei REITs (KGV nicht anwendbar) und ohne aktuellen Referenzkurs wird kein Modellwert ausgegeben.
 Ausdrücklich ein Modell, keine Prognose; ersetzt keine DCF-Einzelanalyse.
 """
@@ -42,7 +43,7 @@ def model_targets(m: dict, sector_median_pe: float | None) -> dict | None:
     if not price or {"zyklik_spitzengewinn", "kurs_veraltet"} & set(flags):
         return None
     if "zyklik_normalisiert" in flags:
-        # Zykliker: normalisierter Gewinn (Ø 5 J.) x eigenes historisches Median-KGV, moderates Wachstum
+        # Zykliker: normalisierter Gewinn (Umsatz × Median-Marge) x eigenes historisches Median-KGV
         eps_trading = _v(m.get("eps_norm_trading"))
         fair_pe = _v(m.get("pe_hist_med5")) or sector_median_pe
         g = _v(m.get("rev_cagr"))

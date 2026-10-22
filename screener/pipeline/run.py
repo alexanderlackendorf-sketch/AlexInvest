@@ -24,6 +24,11 @@ log = logging.getLogger("screener")
 MAX_INFO_AGE_DAYS = 10
 MAX_PRICE_AGE_DAYS = 5  # älter -> kein aktueller Referenzkurs, keine kursbezogenen Aussagen
 HISTORY_KEEP = 400
+# Wächter: Abdeckung dieser Kennzahlen wird mit dem Vortag verglichen (Yahoo ändert Felder still)
+WATCH_METRICS = ["price", "pe_ttm", "pe_fwd", "ev_ebitda", "fcf_yield", "roe", "op_margin", "rev_growth",
+                 "eps_growth_fwd", "rev_eps_90d", "analyst_target", "earnings_date", "roic_med5", "rev_cagr",
+                 "price_time", "score"]
+ALARM_DROP = 0.75  # Alarm, wenn die Abdeckung auf weniger als 75 % des Vortags fällt
 CHART_DAYS = 520  # Kursreihe für den Chart (~2 Jahre); intern werden 5 Jahre geladen
 # GICS-Namen (Wikipedia) auf Yahoo-Sektornamen abbilden, falls Yahoo keinen Sektor liefert
 GICS_TO_YAHOO = {
@@ -60,6 +65,30 @@ def _save(path: Path, obj):
     path.write_text(json.dumps(_clean(obj), ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
 
+def quality_alarms(prev: dict, cur: dict) -> list[str]:
+    """Vergleicht Abdeckung und Umfang mit dem letzten Lauf."""
+    out = []
+    pc, cc = prev.get("metric_coverage") or {}, cur.get("metric_coverage") or {}
+    for k, old in pc.items():
+        new = cc.get(k)
+        if new is not None and old >= 0.3 and new < ALARM_DROP * old:
+            out.append(f"{k}: Abdeckung von {old:.0%} auf {new:.0%} gefallen")
+    for k, label in (("rows", "Aktien mit Daten"), ("rated", "bewertete Aktien")):
+        if prev.get(k) and cur.get(k, 0) < 0.9 * prev[k]:
+            out.append(f"{label}: von {prev[k]} auf {cur.get(k)} gefallen")
+    return out
+
+
+def alarm_markdown(alarms: list[str], meta: dict) -> str:
+    lines = [f"## ⚠️ Datenqualitäts-Alarm · {meta['generated_at'][:16].replace('T', ' ')} UTC", "",
+             "Im heutigen Lauf ist die Abdeckung wichtiger Kennzahlen gegenüber dem Vortag deutlich gefallen. "
+             "Häufigste Ursache: Yahoo hat ein Datenfeld geändert oder blockiert Abrufe. Bis zur Klärung "
+             "die Ratings mit Vorsicht nutzen.", ""]
+    lines += [f"- {a}" for a in alarms]
+    lines += ["", "Details: Screener → *Methodik & Daten*."]
+    return "\n".join(lines)
+
+
 def safe_name(sym: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", sym)
 
@@ -71,6 +100,7 @@ def main(argv=None):
     ap.add_argument("--skip-sec", action="store_true")
     ap.add_argument("--sec-max", type=int, default=600)
     ap.add_argument("--hist-max", type=int, default=200)
+    ap.add_argument("--alarm-file", default=None, help="Markdown-Datei für Datenqualitäts-Alarme")
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -81,6 +111,7 @@ def main(argv=None):
     today = now.date().isoformat()
     t0 = time.time()
 
+    prev_meta = (_load(public / "screener.json", {}) or {}).get("meta", {})
     uni, warnings = universe.load_universe(state)
     if args.limit:
         uni = uni[: args.limit]
@@ -294,6 +325,16 @@ def main(argv=None):
             "Indexzusammensetzung": "Wikipedia (S&P 500, DAX)",
         },
     }
+    # --- Datenqualitäts-Wächter ---
+    n = max(len(out_rows), 1)
+    meta["metric_coverage"] = {k: round(sum(1 for r in out_rows if r.get(k) is not None) / n, 3) for k in WATCH_METRICS}
+    alarms = [] if args.limit else quality_alarms(prev_meta, meta)  # Testläufe mit --limit nicht melden
+    meta["quality_alarms"] = alarms
+    if alarms:
+        log.warning("Datenqualitäts-Alarm: %s", alarms)
+        if args.alarm_file:
+            Path(args.alarm_file).write_text(alarm_markdown(alarms, meta), encoding="utf-8")
+
     _save(public / "screener.json", {"meta": meta, "rows": out_rows})
     log.info("Fertig: %d Zeilen, %d bewertet, %d fehlgeschlagen, %ds", len(out_rows), meta["rated"], len(failed), meta["runtime_s"])
     if len(out_rows) < 0.5 * len(symbols):

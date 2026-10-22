@@ -60,6 +60,8 @@ const pct = (v, d = 1, sign = true) => {
   const cls = v > 0 ? "pos" : v < 0 ? "neg" : "";
   return `<span class="${sign ? cls : ""}">${sign && v > 0 ? "+" : ""}${s}</span>`;
 };
+// Vorzeichen ohne Gut/Schlecht-Färbung (z.B. eingepreistes Wachstum, KGV-Abweichung: "höher" ist nicht "besser")
+const pctN = (v, d = 1) => isNum(v) ? `${v > 0 ? "+" : ""}${F[d].format(v * 100)} %` : dash;
 const pctPlain = (v, d = 1) => isNum(v) ? F[d].format(v * 100) + " %" : dash;
 const bn = (v) => {
   if (!isNum(v)) return dash;
@@ -118,7 +120,7 @@ const COLS = [
   { k: "op_margin", t: "Op. Marge", n: true, r: (r) => pctPlain(r.op_margin) },
   { k: "rev_growth", t: "Umsatz Δ", n: true, r: (r) => pct(r.rev_growth) },
   { k: "rev_cagr", t: "Umsatz 5J", n: true, r: (r) => pct(r.rev_cagr) },
-  { k: "pe_vs_hist", t: "KGV/Hist", n: true, r: (r) => pct(r.pe_vs_hist, 0) },
+  { k: "pe_vs_hist", t: "KGV/Hist", n: true, r: (r) => pctN(r.pe_vs_hist, 0) },
   { k: "rev_eps_90d", t: "Rev. 90T", n: true, r: (r) => pct(r.rev_eps_90d) },
   { k: "div_yield", t: "Div.", n: true, r: (r) => pctPlain(r.div_yield) },
   { k: "analyst_upside", t: "Analysten", n: true, r: (r) => pct(r.analyst_upside) },
@@ -466,6 +468,37 @@ function method() {
 
 /* ---------- Detailansicht ---------- */
 let chart = null;
+let CUR_PX = null;   // Kursdatei der offenen Aktie (enthält die Mehrjahres-Historie für den Prompt)
+
+// 3 Wettbewerber aus derselben Branchengruppe, möglichst ähnlich groß (log. Abstand der Marktkapitalisierung)
+function peersOf(r, n = 3) {
+  const key = r.peer_group || r.sector;
+  if (!key) return [];
+  const size = (x) => Math.log(x.market_cap_eur || 1);
+  return ROWS.filter((x) => x.symbol !== r.symbol && (x.peer_group || x.sector) === key && isNum(x.market_cap_eur)
+      && x.name !== r.name)   // zweite Aktiengattung desselben Unternehmens (z.B. GOOG/GOOGL) ausschließen
+    .sort((a, b) => Math.abs(size(a) - size(r)) - Math.abs(size(b) - size(r))).slice(0, n);
+}
+
+function peerTable(r) {
+  const peers = peersOf(r);
+  if (!peers.length) return '<div class="note">Keine vergleichbaren Werte in der Branchengruppe.</div>';
+  const cols = [r, ...peers];
+  const rows = [
+    ["Score", (x) => scoreBadge(x.score)], ["Ampeln Q B W D E", (x) => ampelRow(x)],
+    ["Urteil", (x) => `<span class="small peer-verdict">${esc(x.verdict)}</span>`],
+    ["KGV fwd", (x) => fmt(x.pe_fwd)], ["KGV normalisiert", (x) => fmt(x.pe_norm)], ["KGV vs. eigener 5J-Median", (x) => pctN(x.pe_vs_hist, 0)],
+    ["EV/EBITDA", (x) => fmt(x.ev_ebitda)], ["FCF-Rendite", (x) => pctPlain(x.fcf_yield)],
+    ["Eingepreistes FCF-Wachstum", (x) => pctN(x.implied_growth)], ["ROIC 5J", (x) => pctPlain(x.roic_med5)],
+    ["Operative Marge", (x) => pctPlain(x.op_margin)], ["Umsatz-CAGR 5J", (x) => pct(x.rev_cagr)],
+    ["EPS-Revision 90T", (x) => pct(x.rev_eps_90d)], ["Marktkap. €", (x) => bn(x.market_cap_eur)],
+  ];
+  return `<div style="overflow-x:auto"><table class="metrics">
+    <tr><td></td>${cols.map((x, i) => `<td class="n"><a href="#${encodeURIComponent(x.symbol)}" class="mono" style="${i === 0 ? "font-weight:700" : ""}">${esc(x.symbol)}</a><br><span class="small muted">${esc(x.name.slice(0, 22))}</span></td>`).join("")}</tr>
+    ${rows.map(([l, f]) => `<tr><td>${l}</td>${cols.map((x) => `<td class="n">${f(x)}</td>`).join("")}</tr>`).join("")}
+  </table></div>
+  <div class="note">Vergleichsgruppe ${esc(r.peer_group || r.sector)}, ausgewählt nach ähnlicher Marktkapitalisierung. Bewertungsunterschiede erst nach Qualität und Wachstum deuten („billiger“ allein genügt nicht).</div>`;
+}
 function closeDetail(fromHash) {
   if ($("#drawer").hidden) return;
   $("#drawer").hidden = true; $("#scrim").hidden = true;
@@ -512,7 +545,7 @@ function openDetail(sym) {
     M("Umsatz-CAGR 5J", "rev_cagr", pct(r.rev_cagr)), M("EPS-CAGR 5J", "eps_cagr", pct(r.eps_cagr)),
     M("Verlustjahre (5J)", "loss_years5", isNum(r.loss_years5) && r.hist_years >= 3 ? String(r.loss_years5) : dash, null, r.hist_years >= 3 ? r.loss_years5 : null),
     M("KGV normalisiert (Umsatz × Median-Marge 5J)", "pe_norm", fmt(r.pe_norm)),
-    M("KGV vs. eigener 5J-Median", "pe_vs_hist", isNum(r.pe_vs_hist) ? `${pct(r.pe_vs_hist, 0)} <span class="muted">(Median ${fmt(r.pe_hist_med5)})</span>` : dash),
+    M("KGV vs. eigener 5J-Median", "pe_vs_hist", isNum(r.pe_vs_hist) ? `${pctN(r.pe_vs_hist, 0)} <span class="muted">(Median ${fmt(r.pe_hist_med5)})</span>` : dash),
   ];
   // Reverse-DCF: eingepreistes FCF-Wachstum gegen tatsächliches 5J-Umsatzwachstum
   const ig = r.implied_growth;
@@ -635,7 +668,7 @@ function openDetail(sym) {
           <div class="note">Basis: ${esc(t.basis || "Konsens-EPS nächstes GJ")} · faires KGV ${fmt(t.fair_pe)} [SCHÄTZUNG]. Kein DCF. Die Einzelanalyse ersetzt es nicht. Ein Bear-Szenario ist keine Verlustuntergrenze.</div>`
         : `<div class="note">${noModel}</div>`}
         <h4>Eingepreiste Erwartung (Reverse-DCF) [BERECHNET aus SCHÄTZUNG]</h4>
-        ${isNum(ig) ? `<dl class="kv"><dt>Eingepreistes FCF-Wachstum</dt><dd>${pct(ig)} p.a. über 10 Jahre</dd>
+        ${isNum(ig) ? `<dl class="kv"><dt>Eingepreistes FCF-Wachstum</dt><dd>${pctN(ig)} p.a. über 10 Jahre</dd>
           <dt>Zum Vergleich</dt><dd>Umsatz-CAGR 5J ${pct(r.rev_cagr)}${igJudge ? ` → <b>${igJudge}</b>` : ""}</dd></dl>
           <div class="note">Annahmen: Kapitalkosten 9 %, danach 2,5 % Dauerwachstum, Basis FCF der letzten 12 Monate und Unternehmenswert (EV). Einheitliche Annahmen für die Vergleichbarkeit, ersetzt keine individuelle DCF.</div>`
           : `<div class="note">${na.has("implied_growth") ? "Nicht anwendbar (Finanzwert)." : "Nicht berechenbar (FCF oder EV nicht positiv)."}</div>`}
@@ -652,6 +685,11 @@ function openDetail(sym) {
         ${flags.length ? `<ul class="flag-list">${flags.map((f) => `<li>${esc(flagText(f))}</li>`).join("")}</ul>` : '<div class="ok-line">✓ Keine Auffälligkeiten bei den Plausibilitätsprüfungen</div>'}
         ${r.website ? `<div class="note"><a href="${esc(r.website)}" target="_blank" rel="noopener">Unternehmens-Website</a></div>` : ""}
       </div>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <h3>Peer-Vergleich</h3>
+      ${peerTable(r)}
     </div>`;
 
   $("#drawer").hidden = false; $("#scrim").hidden = false;
@@ -660,7 +698,8 @@ function openDetail(sym) {
   $("#closeBtn").onclick = closeDetail;
   $("#wBtn").onclick = () => { toggleWatch(r.symbol); $("#wBtn").textContent = WATCH.has(r.symbol) ? "★ Watchlist" : "☆ Watchlist"; };
   $("#claudeBtn").onclick = () => copyPrompt(r);
-  fetch(PX_URL(r.symbol)).then((x) => x.json()).then((px) => { renderHist(px); drawChart(r, px); })
+  CUR_PX = null;
+  fetch(PX_URL(r.symbol)).then((x) => x.json()).then((px) => { CUR_PX = px; renderHist(px); drawChart(r, px); })
     .catch(() => { $("#chart").innerHTML = '<div class="empty">Kursdaten nicht verfügbar.</div>'; });
 }
 
@@ -679,6 +718,24 @@ function renderHist(px) {
     <div class="note">FCF = operativer Cashflow − Investitionen in Sachanlagen. ROIC = operatives Ergebnis × (1 − tatsächliche Steuerquote) / (Eigenkapital + Finanzschulden − liquide Mittel). EPS und Aktienzahl um spätere Aktiensplits bereinigt.</div>`;
 }
 
+function histPrompt(r) {
+  const h = (CUR_PX && CUR_PX.symbol === r.symbol && CUR_PX.hist) || [];
+  if (h.length < 2) return "";
+  const n = (v, d = 0) => isNum(v) ? (Math.abs(v) >= 1e9 ? (v / 1e9).toFixed(1) + " Mrd" : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(0) + " Mio" : v.toFixed(d)) : "n/a";
+  const p = (v) => isNum(v) ? (v * 100).toFixed(1) + " %" : "n/a";
+  return `\nMehrjahresdaten laut Screener (${CUR_PX.hist_source}, ${CUR_PX.hist_currency || ""}; selbst verifizieren):\n`
+    + h.slice(-5).map((y) => `- GJ ${y.fy_end.slice(0, 7)}: Umsatz ${n(y.revenue)}, op. Marge ${p(y.op_margin)}, EPS verw. ${n(y.eps, 2)}, FCF ${n(y.fcf)}, ROIC ${p(y.roic)}, Aktien ${n(y.shares)}`).join("\n") + "\n";
+}
+
+function peerPrompt(r) {
+  const peers = peersOf(r);
+  if (!peers.length) return "";
+  const f = (v, d = 1) => isNum(v) ? v.toFixed(d) : "n/a";
+  const p = (v) => isNum(v) ? (v * 100).toFixed(0) + " %" : "n/a";
+  return `\nWettbewerber für den Peer-Vergleich (aus ${r.peer_group || r.sector}, Screener-Werte):\n`
+    + peers.map((x) => `- ${x.name} (${x.symbol}): Score ${x.score ?? "n/a"}, KGV fwd ${f(x.pe_fwd)}, EV/EBITDA ${f(x.ev_ebitda)}, ROIC 5J ${p(x.roic_med5)}, Umsatz-CAGR 5J ${p(x.rev_cagr)}, Urteil ${x.verdict}`).join("\n") + "\n";
+}
+
 function copyPrompt(r) {
   const f2 = (v, d = 1) => isNum(v) ? v.toFixed(d) : "n/a";
   const p1 = (v) => isNum(v) ? (v * 100).toFixed(1) + " %" : "n/a";
@@ -695,8 +752,11 @@ Orientierungswerte aus meinem Screener. Nicht als Quelle verwenden, alle Zahlen 
 - KGV ttm ${f2(r.pe_ttm)}, KGV fwd ${f2(r.pe_fwd)}, EV/EBITDA ${f2(r.ev_ebitda)}, FCF-Rendite ${p1(r.fcf_yield)}, ROE ${p1(r.roe)}, op. Marge ${p1(r.op_margin)}, Umsatzwachstum ${p1(r.rev_growth)}
 - ROIC 5J ${p1(r.roic_med5)}, Umsatz-CAGR 5J ${p1(r.rev_cagr)}, Aktienzahl p.a. ${p1(r.share_cagr)}, KGV vs. 5J-Median ${p1(r.pe_vs_hist)}, eingepreistes FCF-Wachstum (Reverse-DCF, 9 %/2,5 %) ${p1(r.implied_growth)}
 - EPS-Revision 90 Tage ${p1(r.rev_eps_90d)} · nächster Termin ${r.earnings_date || "unbekannt"}
+- KGV normalisiert ${f2(r.pe_norm)} · Vergleichsgruppe ${r.peer_group || r.sector || "?"}
 - Trend: ${r.trend} · Buy-Zonen laut Screener: ${z}
-- Prüfhinweise des Screeners: ${hints}`;
+- Prüfhinweise des Screeners: ${hints}
+${histPrompt(r)}${peerPrompt(r)}
+Bitte prüfe insbesondere: Ist die Mehrjahresentwicklung nachhaltig, was ist im Kurs eingepreist, und wie schneidet die Aktie gegen die genannten Wettbewerber ab?`;
   const done = () => toast("Prompt kopiert. Im Projekt „Aktienanalyse“ einfügen.");
   navigator.clipboard ? navigator.clipboard.writeText(txt).then(done, () => prompt("Prompt kopieren:", txt)) : prompt("Prompt kopieren:", txt);
 }
