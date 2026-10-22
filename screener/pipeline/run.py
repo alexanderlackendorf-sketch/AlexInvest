@@ -29,6 +29,7 @@ WATCH_METRICS = ["price", "pe_ttm", "pe_fwd", "ev_ebitda", "fcf_yield", "roe", "
                  "eps_growth_fwd", "rev_eps_90d", "analyst_target", "earnings_date", "roic_med5", "rev_cagr",
                  "price_time", "score"]
 ALARM_DROP = 0.75  # Alarm, wenn die Abdeckung auf weniger als 75 % des Vortags fällt
+COVERAGE_VERSION = 2  # bei Änderung der Messung erhöhen -> kein Vergleich mit alter Messung
 CHART_DAYS = 520  # Kursreihe für den Chart (~2 Jahre); intern werden 5 Jahre geladen
 # GICS-Namen (Wikipedia) auf Yahoo-Sektornamen abbilden, falls Yahoo keinen Sektor liefert
 GICS_TO_YAHOO = {
@@ -68,7 +69,8 @@ def _save(path: Path, obj):
 def quality_alarms(prev: dict, cur: dict) -> list[str]:
     """Vergleicht Abdeckung und Umfang mit dem letzten Lauf."""
     out = []
-    pc, cc = prev.get("metric_coverage") or {}, cur.get("metric_coverage") or {}
+    same = prev.get("coverage_version") == cur.get("coverage_version")
+    pc, cc = (prev.get("metric_coverage") or {}) if same else {}, cur.get("metric_coverage") or {}
     for k, old in pc.items():
         new = cc.get(k)
         if new is not None and old >= 0.3 and new < ALARM_DROP * old:
@@ -327,7 +329,11 @@ def main(argv=None):
     }
     # --- Datenqualitäts-Wächter ---
     n = max(len(out_rows), 1)
-    meta["metric_coverage"] = {k: round(sum(1 for r in out_rows if r.get(k) is not None) / n, 3) for k in WATCH_METRICS}
+    def present(v):
+        return v is not None and v == v  # NaN (aus pandas) zählt als fehlend
+
+    meta["coverage_version"] = COVERAGE_VERSION
+    meta["metric_coverage"] = {k: round(sum(1 for r in out_rows if present(r.get(k))) / n, 3) for k in WATCH_METRICS}
     alarms = [] if args.limit else quality_alarms(prev_meta, meta)  # Testläufe mit --limit nicht melden
     meta["quality_alarms"] = alarms
     if alarms:
