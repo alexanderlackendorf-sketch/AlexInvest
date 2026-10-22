@@ -23,6 +23,7 @@ INFO_FIELDS = [
     "dividendRate", "payoutRatio", "beta",
     "targetMeanPrice", "targetMedianPrice", "targetHighPrice", "targetLowPrice",
     "numberOfAnalystOpinions", "recommendationMean", "recommendationKey", "website",
+    "regularMarketTime", "exchange", "fullExchangeName", "exchangeTimezoneName",
 ]
 
 

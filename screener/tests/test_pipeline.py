@@ -12,7 +12,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-from screener.pipeline import metrics, run, scoring, technicals, targets
+from screener.pipeline import metrics, run, scoring, sec, technicals, targets
 
 SECTORS = ["Technology", "Healthcare", "Financial Services", "Industrials", "Energy"]
 
@@ -110,6 +110,57 @@ class MetricsTest(unittest.TestCase):
             self.assertIsNone(m[k], k)
 
 
+class RulesTest(unittest.TestCase):
+    """Regeln aus dem Projekt "Aktienanalyse": rote Ampeln werden nicht kompensiert."""
+
+    def _row(self, q, b, w=6.0, score=9.0, cov=1.0, flags=(), zone=False):
+        return {"pillars": {"Qualität": q, "Bewertung": b, "Wachstum": w}, "score": score, "coverage": cov,
+                "flags": list(flags), "trend": "Aufwärtstrend", "dist_sma200": 0.05, "in_buy_zone": zone,
+                "buy_zones": []}
+
+    def test_verdicts(self):
+        self.assertEqual(scoring.assess(self._row(8, 7))["verdict_code"], "kandidat")
+        self.assertEqual(scoring.assess(self._row(8, 7, w=2))["verdict_code"], "beobachten")
+        self.assertEqual(scoring.assess(self._row(5, 5, score=4))["verdict_code"], "neutral")
+        self.assertEqual(scoring.assess(self._row(8, 2))["verdict_code"], "beobachten_teuer")
+        self.assertEqual(scoring.assess(self._row(5, 2))["verdict_code"], "meiden_teuer")
+        self.assertEqual(scoring.assess(self._row(2, 9))["verdict_code"], "meiden_schwach")
+        self.assertEqual(scoring.assess(self._row(8, 7, cov=0.4))["verdict_code"], "nab")
+        self.assertEqual(scoring.assess(self._row(8, 7, flags=["sec_abweichung"]))["verdict_code"], "nab")
+        # Zykliker im möglichen Spitzengewinn ist nie "Kandidat"
+        self.assertEqual(scoring.assess(self._row(8, 7, flags=["zyklik_spitzengewinn"]))["verdict_code"], "beobachten")
+
+    def test_score_caps(self):
+        df = pd.DataFrame({
+            "sector": ["Technology"] * 12, "industry": ["Software"] * 12,
+            "is_financial": [False] * 12, "is_reit": [False] * 12, "loss_making": [False] * 12,
+            "not_applicable": [[] for _ in range(12)],
+            "pe_fwd": [10 + i for i in range(12)], "pe_ttm": [12 + i for i in range(12)],
+            "ev_ebitda": [8 + i for i in range(12)], "fcf_yield": [0.08 - i * 0.005 for i in range(12)],
+            "peg": [0.8 + i * 0.1 for i in range(12)], "pb": [2.0] * 12, "roa": [0.05] * 12,
+            # Aktie 0: billigste, aber schlechteste Qualität
+            "roe": [0.01] + [0.2 + i * 0.01 for i in range(11)], "op_margin": [0.0] + [0.2] * 11,
+            "gross_margin": [0.1] + [0.5] * 11, "fcf_margin": [0.0] + [0.15] * 11,
+            "net_debt_ebitda": [5.0] + [1.0] * 11, "rev_growth": [0.3] + [0.05] * 11,
+            "earn_growth": [0.3] + [0.05] * 11, "eps_growth_fwd": [0.3] + [0.05] * 11,
+            "mom_12_1": [0.1] * 12, "ret_3m": [0.0] * 12, "dist_sma200": [0.0] * 12,
+            "analyst_upside": [0.1] * 12, "analyst_rec": [2.0] * 12,
+        }, index=[f"S{i}" for i in range(12)])
+        res = scoring.score(df)
+        self.assertEqual(scoring.ampel(res.at["S0", "p_Qualität"]), "rot")
+        self.assertLessEqual(res.at["S0", "score"], 4.0)
+        self.assertEqual(res.at["S0", "score_cap"], "Qualität rot")
+
+    def test_cyclical_peak_flag(self):
+        self.assertTrue(scoring.is_cyclical("Technology", "Semiconductors"))
+        self.assertFalse(scoring.is_cyclical("Technology", "Software - Infrastructure"))
+
+    def test_split_detection(self):
+        self.assertEqual(sec.split_factor(7.36, 14.72), 0.5)
+        self.assertEqual(sec.split_factor(3.58, 0.895), 4)
+        self.assertIsNone(sec.split_factor(4.91, 4.21905))
+
+
 class TechnicalsTest(unittest.TestCase):
     def test_buy_zone_below_price(self):
         df = fake_prices(3, drift=0.001)
@@ -123,6 +174,12 @@ class TargetsTest(unittest.TestCase):
     def test_targets(self):
         t = targets.model_targets({"eps_fwd": 5, "pe_fwd": 20, "price": 100, "eps_growth_fwd": 0.10}, 20)
         self.assertAlmostEqual(t["y1"], 5 * 1.1 * 20, places=2)
+        self.assertAlmostEqual(t["fair_value"], 100.0)
+        self.assertLess(t["scenarios"]["bear"]["end_price"], t["scenarios"]["base"]["end_price"])
+        self.assertLess(t["scenarios"]["base"]["end_price"], t["scenarios"]["bull"]["end_price"])
+        self.assertIsNone(targets.model_targets({"eps_fwd": 5, "pe_fwd": float("nan"), "price": 20, "eps_growth_fwd": 0.1}, 15))
+        self.assertIsNone(targets.model_targets({"eps_fwd": 5, "pe_fwd": 4, "price": 20, "eps_growth_fwd": 0.5,
+                                                 "flags": ["zyklik_spitzengewinn"]}, 15))
         self.assertIsNone(targets.model_targets({"eps_fwd": -1, "pe_fwd": None, "price": 10}, 15))
 
 

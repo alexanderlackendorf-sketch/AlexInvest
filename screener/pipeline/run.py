@@ -21,6 +21,7 @@ from . import fetch, metrics, scoring, sec, technicals, targets, universe
 
 log = logging.getLogger("screener")
 MAX_INFO_AGE_DAYS = 10
+MAX_PRICE_AGE_DAYS = 5  # älter -> kein aktueller Referenzkurs, keine kursbezogenen Aussagen
 HISTORY_KEEP = 400
 # GICS-Namen (Wikipedia) auf Yahoo-Sektornamen abbilden, falls Yahoo keinen Sektor liefert
 GICS_TO_YAHOO = {
@@ -130,6 +131,8 @@ def main(argv=None):
         if abs(m["price"] / float(px["Close"].iloc[-1]) - 1) > 0.25:
             flags.append("kurs_vs_schluss_abweichung")
         t = technicals.compute(px)
+        if (now.date() - dt.date.fromisoformat(t["last_date"])).days > MAX_PRICE_AGE_DAYS:
+            flags.append("kurs_veraltet")
         if info_date != today:
             flags.append(f"fundamentaldaten_vom_{info_date}")
         u = meta_by_sym[s]
@@ -148,17 +151,24 @@ def main(argv=None):
             "d": [[i.strftime("%Y-%m-%d"), r.Open, r.High, r.Low, r.Close] for i, r in px.iterrows()],
         })
 
-    df = pd.DataFrame(rows).set_index("symbol")
-    sc = scoring.score(df)
-    df = df.join(sc)
-    sector_pe = df.groupby("sector")["pe_fwd"].median().to_dict()
-
-    # --- SEC-Abgleich (US) ---
+    # --- SEC-Abgleich (US) – vor dem Scoring, weil er die Datenqualität bestimmt ---
     sec_cache = _load(state / "sec_cache.json", {})
     if not args.skip_sec:
         sec_cache, sec_warn = sec.refresh(uni, sec_cache, max_checks=args.sec_max)
         warnings += sec_warn
         _save(state / "sec_cache.json", sec_cache)
+    for r in rows:
+        if r["symbol"] in sec_cache:
+            r["sec"] = sec_cache[r["symbol"]]
+            if r["sec"].get("status") == "abweichung":
+                r["flags"].append("sec_abweichung")
+
+    df = pd.DataFrame(rows).set_index("symbol")
+    sc = scoring.score(df)
+    df = df.join(sc)
+    df["flags"] = [f + x for f, x in zip(df["flags"], df["extra_flags"])]
+    df = df.drop(columns=["extra_flags"])
+    sector_pe = df.groupby("sector")["pe_fwd"].median().to_dict()
 
     # --- Historie & Score-Veränderung ---
     hist = _load(state / "history.json", {})
@@ -179,15 +189,13 @@ def main(argv=None):
         d = r.to_dict()
         d["symbol"] = s
         d["pillars"] = {n: d.pop(f"p_{n}") for n in scoring.PILLARS}
+        if not isinstance(d.get("sec"), dict):
+            d.pop("sec", None)
+        d.update(scoring.assess(d))
         d["targets"] = targets.model_targets(d, sector_pe.get(d.get("sector")))
-        d["verdict"] = scoring.verdict(d.get("score"), d.get("in_buy_zone"), d.get("trend"))
         d["score_chg_1w"] = change(s, 7)
         d["score_chg_1m"] = change(s, 30)
         d["spark"] = [x[1] for x in hist.get(s, [])[-60:]]
-        if s in sec_cache:
-            d["sec"] = sec_cache[s]
-            if sec_cache[s].get("status") == "abweichung":
-                d["flags"] = d["flags"] + ["sec_abweichung"]
         d.pop("composite", None)
         out_rows.append(d)
 
@@ -209,8 +217,11 @@ def main(argv=None):
         "failed": failed, "warnings": warnings, "flag_counts": flag_counts, "sec_status": sec_status,
         "fx_to_eur": fx,
         "price_date_max": max((r["last_date"] for r in out_rows), default=None),
-        "pillars": {n: {"weight": p["weight"], "metrics": [[m, scoring.LABELS[m], hb] for m, hb in p["metrics"]]}
+        "pillars": {n: {"weight": p["weight"], "in_score": p["in_score"],
+                        "metrics": [[m, scoring.LABELS[m], hb] for m, hb in p["metrics"]]}
                     for n, p in scoring.PILLARS.items()},
+        "verdicts": {c: sum(1 for r in out_rows if r["verdict_code"] == c)
+                     for c in ("kandidat", "beobachten", "beobachten_teuer", "neutral", "meiden_teuer", "meiden_schwach", "meiden", "nab")},
         "sources": {
             "Kurse & Fundamentaldaten": "Yahoo Finance (via yfinance), täglich",
             "US-Abschlüsse (Gegenprüfung)": "SEC EDGAR XBRL companyfacts (10-K)",
