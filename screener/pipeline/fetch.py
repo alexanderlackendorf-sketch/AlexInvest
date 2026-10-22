@@ -48,7 +48,7 @@ def fetch_info(symbol: str) -> dict | None:
     return _retry(go, f"info {symbol}")
 
 
-def fetch_prices(symbols: list[str], period: str = "2y", chunk: int = 80) -> dict[str, pd.DataFrame]:
+def fetch_prices(symbols: list[str], period: str = "2y", chunk: int = 80, min_rows: int = 21) -> dict[str, pd.DataFrame]:
     """Tagesdaten (dividenden-/splitbereinigt). Rückgabe: Symbol -> DataFrame[Open,High,Low,Close,Volume]."""
     out: dict[str, pd.DataFrame] = {}
     for i in range(0, len(symbols), chunk):
@@ -64,7 +64,7 @@ def fetch_prices(symbols: list[str], period: str = "2y", chunk: int = 80) -> dic
             except KeyError:
                 continue
             sub = sub.dropna(subset=["Close"])
-            if len(sub) > 20:
+            if len(sub) >= min_rows:
                 out[s] = sub[["Open", "High", "Low", "Close", "Volume"]].copy()
         time.sleep(1)
     return out
@@ -75,7 +75,7 @@ def fetch_fx_to_eur(currencies: set[str]) -> dict[str, float]:
     rates = {"EUR": 1.0}
     need = {("GBP" if c == "GBp" else c) for c in currencies if c} - {"EUR"}
     pairs = {c: f"{c}EUR=X" for c in need}
-    px = fetch_prices(list(pairs.values()), period="5d")
+    px = fetch_prices(list(pairs.values()), period="1mo", min_rows=1)
     for c, p in pairs.items():
         if p in px:
             rates[c] = float(px[p]["Close"].iloc[-1])

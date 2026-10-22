@@ -22,6 +22,12 @@ from . import fetch, metrics, scoring, sec, technicals, targets, universe
 log = logging.getLogger("screener")
 MAX_INFO_AGE_DAYS = 10
 HISTORY_KEEP = 400
+# GICS-Namen (Wikipedia) auf Yahoo-Sektornamen abbilden, falls Yahoo keinen Sektor liefert
+GICS_TO_YAHOO = {
+    "Information Technology": "Technology", "Health Care": "Healthcare", "Financials": "Financial Services",
+    "Consumer Discretionary": "Consumer Cyclical", "Consumer Staples": "Consumer Defensive",
+    "Materials": "Basic Materials",
+}
 
 
 def _clean(o):
@@ -100,6 +106,9 @@ def main(argv=None):
 
     currencies = {i[0].get("currency") for i in infos.values()} | {i[0].get("financialCurrency") for i in infos.values()}
     fx = fetch.fetch_fx_to_eur({c for c in currencies if c})
+    missing_fx = sorted(c for c in currencies if c and c not in fx)
+    if missing_fx:
+        warnings.append(f"Devisenkurse fehlen für {', '.join(missing_fx)} – betroffene Kennzahlen werden nicht berechnet")
 
     # --- Kennzahlen + Technik ---
     rows, failed = [], []
@@ -128,7 +137,7 @@ def main(argv=None):
             "symbol": s,
             "name": info.get("longName") or info.get("shortName") or u["name"],
             "indices": u["indices"], "region": u["region"],
-            "sector": info.get("sector") or u.get("gics_sector"),
+            "sector": info.get("sector") or GICS_TO_YAHOO.get(u.get("gics_sector"), u.get("gics_sector")),
             "industry": info.get("industry"), "country": info.get("country"),
             "website": info.get("website"),
             "fund_date": info_date,
