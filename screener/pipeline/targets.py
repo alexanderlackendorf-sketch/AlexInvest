@@ -7,8 +7,9 @@ Methode: Multiplikator auf Forward-EPS [BERECHNET aus SCHÄTZUNGEN].
   - Szenarien unterscheiden sich in operativen Annahmen (EPS-Wachstum) und im Multiplikator:
       Bear: Wachstum -10 Pp., KGV x0,8   Base: Konsenswachstum   Bull: Wachstum +5 Pp., KGV x1,15
   - Wachstum gedeckelt auf [-15 %, +25 %] p.a., abnehmend (100 % / 80 % / 60 %)
-Nur für profitable Unternehmen mit Forward-EPS; bei Zyklikern im möglichen Spitzengewinn, REITs
-(KGV nicht anwendbar) und ohne aktuellen Referenzkurs wird kein Modellwert ausgegeben.
+Nur für profitable Unternehmen mit Forward-EPS. Zykliker im möglichen Spitzengewinn werden über den
+normalisierten Gewinn (Ø 5 J.) und ihr eigenes historisches Median-KGV bewertet; ohne Mehrjahresdaten,
+bei REITs (KGV nicht anwendbar) und ohne aktuellen Referenzkurs wird kein Modellwert ausgegeben.
 Ausdrücklich ein Modell, keine Prognose; ersetzt keine DCF-Einzelanalyse.
 """
 from __future__ import annotations
@@ -38,23 +39,34 @@ def model_targets(m: dict, sector_median_pe: float | None) -> dict | None:
     eps_fwd, pe_fwd, price = _v(m.get("eps_fwd")), _v(m.get("pe_fwd")), _v(m.get("price"))
     sector_median_pe = _v(sector_median_pe)
     flags = m.get("flags") or []
-    if not (eps_fwd and eps_fwd > 0 and pe_fwd and price):
+    if not price or {"zyklik_spitzengewinn", "kurs_veraltet"} & set(flags):
         return None
-    if {"zyklik_spitzengewinn", "kurs_veraltet"} & set(flags):
-        return None
-    g = _v(m.get("eps_growth_fwd"))
-    if g is None:
-        g = _v(m.get("earn_growth"))
-    if g is None:
-        return None
-    base_pe = pe_fwd if sector_median_pe is None else 0.5 * pe_fwd + 0.5 * sector_median_pe
-    fair_pe = max(pe_fwd * 0.75, min(pe_fwd * 1.25, base_pe))
-    # EPS_fwd ist in Bilanzwährung; Kurs/KGV rechnet sauber in Handelswährung zurück
-    eps_trading = price / pe_fwd
+    if "zyklik_normalisiert" in flags:
+        # Zykliker: normalisierter Gewinn (Ø 5 J.) x eigenes historisches Median-KGV, moderates Wachstum
+        eps_trading = _v(m.get("eps_norm_trading"))
+        fair_pe = _v(m.get("pe_hist_med5")) or sector_median_pe
+        g = _v(m.get("rev_cagr"))
+        if not (eps_trading and eps_trading > 0 and fair_pe and g is not None):
+            return None
+        g = max(-0.05, min(0.08, g))
+        basis = "normalisierter Gewinn (Umsatz × Median-Nettomarge 5 J.) × eigenes Median-KGV 5 J."
+    else:
+        if not (eps_fwd and eps_fwd > 0 and pe_fwd):
+            return None
+        g = _v(m.get("eps_growth_fwd"))
+        if g is None:
+            g = _v(m.get("earn_growth"))
+        if g is None:
+            return None
+        base_pe = pe_fwd if sector_median_pe is None else 0.5 * pe_fwd + 0.5 * sector_median_pe
+        fair_pe = max(pe_fwd * 0.75, min(pe_fwd * 1.25, base_pe))
+        # EPS_fwd ist in Bilanzwährung; Kurs/KGV rechnet sauber in Handelswährung zurück
+        eps_trading = price / pe_fwd
+        basis = "Konsens-EPS nächstes GJ × faires KGV (eigenes/Sektor, max. ±25 %)"
     div = _v(m.get("div_yield")) or 0.0
 
     out = {"fair_pe": round(fair_pe, 1), "growth": round(max(-0.15, min(0.25, g)), 3), "div_yield": div,
-           "scenarios": {}}
+           "basis": basis, "scenarios": {}}
     for name, sc in SCENARIOS.items():
         gs = max(-0.15, min(0.25, g + sc["g_shift"]))
         pe = fair_pe * sc["pe_mult"]

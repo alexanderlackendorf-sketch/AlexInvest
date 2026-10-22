@@ -9,12 +9,17 @@ on:
         description: "Nur die ersten N Aktien (Test, leer = alle)"
         required: false
         default: ""
+      digest:
+        description: "Wochen-Digest jetzt verschicken (true/false)"
+        required: false
+        default: "false"
   push:
     branches: [main]
     paths: ["screener/web/**"]   # nur Oberfläche neu ausliefern, ohne Datenlauf
 
 permissions:
   contents: write
+  issues: write
   pages: write
   id-token: write
 
@@ -56,6 +61,28 @@ jobs:
           ARGS=""
           if [ -n "${{ github.event.inputs.limit }}" ]; then ARGS="--limit ${{ github.event.inputs.limit }} --sec-max 10"; fi
           python -m screener.pipeline.run --state state $ARGS
+
+      - name: Wochen-Digest (freitags oder manuell) als Issue-Kommentar -> GitHub verschickt die E-Mail
+        if: github.event_name != 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%u)" != "5" ] && [ "${{ github.event.inputs.digest }}" != "true" ]; then
+            echo "Kein Digest-Tag"; exit 0
+          fi
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          SITE="https://${OWNER,,}.github.io/${REPO}/"
+          python -m screener.pipeline.digest --state state --out digest.md --site "$SITE" --mention "$OWNER"
+          gh label create screener-digest --color 1f6feb --description "Wochen-Digest des Screeners" --force
+          NUM=$(gh issue list --label screener-digest --state open --json number --jq '.[0].number // empty')
+          if [ -z "$NUM" ]; then
+            URL=$(gh issue create --title "📬 Screener-Digest" --label screener-digest \
+              --body "Hier erscheint jeden Freitag der Wochen-Digest des Screeners. Jeder neue Kommentar löst eine E-Mail-Benachrichtigung aus.")
+            NUM="${URL##*/}"
+          fi
+          gh issue comment "$NUM" --body-file digest.md
 
       - name: Datenstand sichern (ein Commit, ohne Historie -> Repo bleibt klein)
         if: github.event_name != 'push'

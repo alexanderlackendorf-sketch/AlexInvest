@@ -14,7 +14,7 @@ import pandas as pd
 
 import datetime as dt
 
-from screener.pipeline import history, metrics, run, scoring, sec, technicals, targets, tracking
+from screener.pipeline import digest, history, metrics, run, scoring, sec, technicals, targets, tracking
 
 SECTORS = ["Technology", "Healthcare", "Financial Services", "Industrials", "Energy"]
 
@@ -163,6 +163,69 @@ class RulesTest(unittest.TestCase):
         self.assertIsNone(sec.split_factor(4.91, 4.21905))
 
 
+class PackageFourTest(unittest.TestCase):
+    """Branchenvergleich, Hysterese, Zahlen-Warnung, normalisierte Zykliker, Digest."""
+
+    def test_peer_groups(self):
+        self.assertEqual(scoring.peer_group("Technology", "Semiconductors"), "Halbleiter")
+        self.assertEqual(scoring.peer_group("Technology", "Software - Infrastructure"), "Software & IT-Dienste")
+        self.assertEqual(scoring.peer_group("Technology", "Consumer Electronics"), "Hardware & Elektronik")
+        self.assertEqual(scoring.peer_group("Utilities", None), "Utilities")
+
+    def test_pct_uses_finest_group_with_enough_values(self):
+        vals = pd.Series([float(i) for i in range(20)])
+        group = pd.Series(["A"] * 10 + ["B"] * 10)
+        sector = pd.Series(["S"] * 20)
+        p = scoring._pct(vals, [(group, 8), (sector, 10)], True)
+        self.assertAlmostEqual(p.iloc[9], 1.0)    # bestes in Gruppe A
+        self.assertAlmostEqual(p.iloc[10], 0.1)   # schlechtestes in Gruppe B
+        p2 = scoring._pct(vals, [(group, 11), (sector, 10)], True)   # Gruppen zu klein -> Sektor
+        self.assertAlmostEqual(p2.iloc[9], 0.5)
+
+    def _row(self, score, flags=(), prev=None):
+        r = {"pillars": {"Qualität": 8, "Bewertung": 7, "Wachstum": 6}, "score": score, "coverage": 1.0,
+             "flags": list(flags), "trend": "Aufwärtstrend", "dist_sma200": 0.05, "in_buy_zone": True,
+             "buy_zones": [{}], "earnings_in_days": 3}
+        return scoring.assess(r, prev)
+
+    def test_hysteresis(self):
+        self.assertEqual(self._row(7.8)["verdict_code"], "beobachten")
+        self.assertEqual(self._row(7.8, prev="kandidat")["verdict_code"], "kandidat")
+        self.assertEqual(self._row(7.4, prev="kandidat")["verdict_code"], "beobachten")
+        self.assertEqual(self._row(5.2, prev="beobachten")["verdict_code"], "beobachten")
+
+    def test_earnings_soon(self):
+        a = self._row(9.0, flags=["zahlen_in_kuerze"])
+        self.assertEqual(a["ampeln"]["Einstieg"], "gelb")
+        self.assertIn("Zahlen in 3 Tagen", a["verdict"])
+        self.assertEqual(a["ampeln"]["Daten"], "gruen")
+
+    def test_cyclical_normalized_target(self):
+        m = {"price": 100.0, "eps_norm_trading": 5.0, "pe_hist_med5": 15.0, "rev_cagr": 0.20,
+             "flags": ["zyklik_normalisiert"], "eps_fwd": 20.0, "pe_fwd": 5.0}
+        t = targets.model_targets(m, 12.0)
+        self.assertAlmostEqual(t["fair_value"], 75.0)   # 5 x 15, nicht 20 x KGV
+        self.assertEqual(t["growth"], 0.08)              # Wachstum gedeckelt
+        self.assertLess(t["margin_of_safety"], 0)
+
+    def test_digest(self):
+        rows = [{"symbol": "A", "name": "Alpha", "score": 9.0, "verdict_code": "kandidat", "verdict": "Kandidat",
+                 "ampeln": {}, "in_buy_zone": True, "earnings_in_days": 2, "earnings_date": "2026-10-24",
+                 "roic_med5": 0.2, "pe_fwd": 15.0},
+                {"symbol": "B", "name": "Beta", "score": 6.0, "verdict_code": "beobachten", "verdict": "Beobachten",
+                 "ampeln": {}, "in_buy_zone": False, "earnings_in_days": None}]
+        data = {"rows": rows, "meta": {"generated_at": "2026-10-23T22:30:00", "rated": 2, "price_date_max": "2026-10-23",
+                                       "tracking": {"since": "2026-10-22", "horizons": {}}}}
+        md, st = digest.build(data, {}, ["B"], "https://x/", "owner", dt.date(2026, 10, 23))
+        self.assertIn("@owner", md)
+        self.assertIn("erster Digest", md)
+        self.assertIn("[**A**](https://x/#A)", md)
+        self.assertEqual(st["verdicts"], {"A": "kandidat", "B": "beobachten"})
+        rows[0]["verdict_code"], rows[0]["verdict"] = "beobachten", "Beobachten"
+        md2, _ = digest.build(data, st, ["B"], "https://x/", None, dt.date(2026, 10, 30))
+        self.assertIn("Nicht mehr Kandidat (1)", md2)
+
+
 class HistoryTest(unittest.TestCase):
     def _years(self):
         ys = []
@@ -184,6 +247,20 @@ class HistoryTest(unittest.TestCase):
         # ROIC letztes Jahr: 20*1.1^6 * (1-0.2) / (80+30-10)
         self.assertAlmostEqual(h["roic_last"], 20 * 1.1 ** 6 * 0.8 / 100, places=6)
         self.assertEqual(len(h["hist_table"]), 7)
+
+    def test_margin_normalized_eps(self):
+        h = history.derive(self._years())
+        # konstante Nettomarge 15 % -> normalisiertes EPS = letzter Umsatz x 15 % / Aktien = aktuelles EPS
+        self.assertAlmostEqual(h["eps_norm5"], 100 * 1.1 ** 6 * 0.15 / 10, places=6)
+        ys = self._years()
+        ys[-1]["net_income"] *= 3   # Spitzenjahr: Marge 45 %
+        self.assertLess(history.derive(ys)["eps_norm5"], ys[-1]["net_income"] / ys[-1]["shares"])
+
+    def test_max_rev_drop(self):
+        ys = self._years()
+        self.assertGreater(history.derive(ys)["max_rev_drop"], 0)
+        ys[3]["revenue"] = ys[2]["revenue"] * 0.6
+        self.assertAlmostEqual(history.derive(ys)["max_rev_drop"], -0.4, places=6)
 
     def test_missing_tax_gives_no_roic(self):
         ys = self._years()

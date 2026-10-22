@@ -16,6 +16,7 @@ GitHub Actions (Mo–Fr 22:17 UTC)
        sec.py        US-Abschlüsse gegen SEC EDGAR 10-K prüfen (rollierend)
        history.py    Mehrjahres-Historie (SEC bis 10 J., sonst Yahoo): ROIC, Margen, Cash Conversion, Verwässerung
        tracking.py   Erfolgskontrolle: wöchentliche Kohorten vs. Universum, S&P 500, DAX
+       digest.py     Wochen-Digest (freitags) als Kommentar im Issue „📬 Screener-Digest“ -> E-Mail über GitHub
   └─ Datenstand  -> Branch `screener-data` (ein einziger Commit, wird überschrieben)
   └─ Website     -> GitHub Pages (screener/web + Daten)
 ```
@@ -37,6 +38,12 @@ python -m screener.pipeline.run --state state --limit 30 --sec-max 5  # Probelau
 mkdir -p site && cp -r screener/web/. site/ && cp -r state/public site/data
 python -m http.server -d site 8000
 ```
+
+## Wochen-Digest und Watchlist
+
+Jeden Freitag nach dem Datenlauf erscheint ein Kommentar im Issue **„📬 Screener-Digest“**. Er enthält neue und weggefallene Kandidaten, neue Buy-Zonen, die Watchlist und Quartalstermine. GitHub verschickt dazu eine E-Mail an alle, die das Issue abonniert haben. Manuell auslösen lässt er sich über *Actions → Screener → Run workflow → digest = true*.
+
+Die Watchlist für Digest und alle Geräte steht in `config/watchlist.json` und lässt sich direkt aus dem Screener übernehmen: *Watchlist → „Für den Wochen-Digest übernehmen“*.
 
 ## Universum anpassen
 
