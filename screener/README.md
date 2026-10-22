@@ -22,7 +22,7 @@ GitHub Actions (Mo–Fr 22:17 UTC)
 
 - Kein Wert wird geschätzt oder aufgefüllt. Fehlt etwas, steht dort „—“, und das Gewicht der Kennzahl entfällt.
 - Verhältniszahlen (KGV, KBV, EV/EBITDA) werden selbst berechnet, mit angeglichener Währung, und mit Yahoo abgeglichen. Widersprechen sich die Werte, wird die Kennzahl verworfen und markiert.
-- Bei US-Werten werden Umsatz, Gewinn und EPS gegen den 10-K-Bericht bei der SEC geprüft. Toleranz: 5 %.
+- Bei US-Werten werden Nettogewinn und EPS gegen den 10-K-Bericht bei der SEC geprüft. Toleranz: 5 %. Der Umsatz wird nur zur Information verglichen.
 - Fällt ein Abruf aus, werden Fundamentaldaten bis 10 Tage weiterverwendet und sichtbar markiert.
 - Werden weniger als 50 % der Aktien verarbeitet, gilt der Lauf als fehlgeschlagen. Die Seite zeigt dann weiter den letzten guten Stand.
 

@@ -66,7 +66,7 @@ def main(argv=None):
     ap.add_argument("--state", default="state")
     ap.add_argument("--limit", type=int, default=0, help="nur die ersten N Aktien (Test)")
     ap.add_argument("--skip-sec", action="store_true")
-    ap.add_argument("--sec-max", type=int, default=120)
+    ap.add_argument("--sec-max", type=int, default=600)
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

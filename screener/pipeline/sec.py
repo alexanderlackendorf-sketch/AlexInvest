@@ -1,6 +1,6 @@
 """Gegenprüfung US-Fundamentaldaten gegen die offiziellen SEC-EDGAR-XBRL-Daten (10-K).
 
-Pro Lauf wird nur ein Teil der Firmen neu geprüft (rollierend, max. 1x pro Woche je Firma),
+Jede Firma wird höchstens 1x pro Woche neu geprüft (rollierend),
 um die SEC-Fair-Access-Regeln (max. 10 Requests/s) deutlich zu unterschreiten.
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ REVENUE_CONCEPTS = [
     "RevenueFromContractWithCustomerIncludingAssessedTax",
 ]
 TOLERANCE = 0.05
+CACHE_VERSION = 2  # bei Logikänderung erhöhen -> alte Prüfergebnisse werden neu erzeugt
 
 
 def _get(url: str, timeout: int = 60) -> requests.Response:
@@ -40,8 +41,9 @@ def ticker_cik_map() -> dict[str, int]:
     return {v["ticker"].upper().replace(".", "-"): int(v["cik_str"]) for v in r.json().values()}
 
 
-def latest_annual(facts: dict, concepts: list[str], unit: str) -> dict | None:
-    """Jüngster 10-K-Jahreswert über alle angegebenen Konzepte."""
+def latest_annual(facts: dict, concepts: list[str], unit: str, prefer_max: bool = False) -> dict | None:
+    """Jüngster 10-K-Jahreswert über alle angegebenen Konzepte.
+    prefer_max: bei gleichem Stichtag den größten Wert nehmen (Umsatz: Gesamtumsatz statt Teilposition)."""
     best = None
     gaap = facts.get("facts", {}).get("us-gaap", {})
     for c in concepts:
@@ -51,8 +53,8 @@ def latest_annual(facts: dict, concepts: list[str], unit: str) -> dict | None:
             days = (dt.date.fromisoformat(rec["end"]) - dt.date.fromisoformat(rec["start"])).days
             if not 340 <= days <= 380:
                 continue
-            key = (rec["end"], rec.get("filed", ""))
-            if best is None or key > (best["end"], best.get("filed", "")):
+            tie = (lambda r: r["val"]) if prefer_max else (lambda r: r.get("filed", ""))
+            if best is None or (rec["end"], tie(rec)) > (best["end"], tie(best)):
                 best = {**rec, "concept": c}
     return best
 
@@ -83,11 +85,11 @@ def _cmp(sec_val, y_val):
 
 def verify_company(symbol: str, cik: int) -> dict:
     facts = company_facts(cik)
-    rev = latest_annual(facts, REVENUE_CONCEPTS, "USD")
+    rev = latest_annual(facts, REVENUE_CONCEPTS, "USD", prefer_max=True)
     ni = latest_annual(facts, ["NetIncomeLoss"], "USD")
     eps = latest_annual(facts, ["EarningsPerShareDiluted"], "USD/shares")
     anchor = ni or rev
-    res = {"checked": dt.date.today().isoformat(), "cik": cik, "status": "keine_10k_daten"}
+    res = {"checked": dt.date.today().isoformat(), "cik": cik, "status": "keine_10k_daten", "v": CACHE_VERSION}
     if anchor is None:
         return res
     stmt = fetch.fetch_income_annual(symbol)
@@ -103,7 +105,9 @@ def verify_company(symbol: str, cik: int) -> dict:
         y_val = _yahoo_value(stmt, yrows, end)
         d = _cmp(sec_val, y_val)
         res[key] = {"sec": sec_val, "yahoo": y_val, "dev": d}
-        if d is not None:
+        # Umsatz ist je nach Branche unterschiedlich definiert (z.B. vor/nach Verbrauchsteuern, Zinserträge
+        # bei Banken) -> nur informativ. Nettogewinn und EPS sind eindeutig und entscheiden über den Status.
+        if d is not None and key != "revenue":
             devs.append(d)
     res.update({
         "fy_end": end,
@@ -120,7 +124,7 @@ def verify_company(symbol: str, cik: int) -> dict:
     return res
 
 
-def refresh(universe: list[dict], cache: dict, max_checks: int = 120) -> tuple[dict, list[str]]:
+def refresh(universe: list[dict], cache: dict, max_checks: int = 600) -> tuple[dict, list[str]]:
     """Aktualisiert den SEC-Cache rollierend. Liefert (cache, Warnungen)."""
     errors: list[str] = []
     # US-Notierungen haben bei Yahoo kein Börsensuffix (20-F-Filer liefern keine 10-K-Daten -> Status bleibt offen)
@@ -137,7 +141,9 @@ def refresh(universe: list[dict], cache: dict, max_checks: int = 120) -> tuple[d
 
     def age(sym):
         c = cache.get(sym)
-        return 10_000 if not c else (today - dt.date.fromisoformat(c["checked"])).days
+        if not c or c.get("v") != CACHE_VERSION:
+            return 10_000
+        return (today - dt.date.fromisoformat(c["checked"])).days
 
     todo = sorted((u for u in us if age(u["symbol"]) >= 7), key=lambda u: -age(u["symbol"]))[:max_checks]
     for u in todo:
