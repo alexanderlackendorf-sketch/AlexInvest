@@ -40,13 +40,68 @@ def _retry(fn, what: str, tries: int = 4):
             delay *= 2
 
 
+def _extras(t) -> dict:
+    """Gewinnrevisionen und nächster Termin. Fehler hier dürfen den Abruf nicht scheitern lassen."""
+    out: dict = {}
+    try:
+        tr = t.eps_trend
+        if tr is not None and not tr.empty:
+            for period in ("+1y", "0y"):
+                if period in tr.index:
+                    row = tr.loc[period]
+                    out["eps_trend"] = {"period": period, "current": _f(row.get("current")),
+                                        "d30": _f(row.get("30daysAgo")), "d90": _f(row.get("90daysAgo"))}
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rv = t.eps_revisions
+        if rv is not None and not rv.empty:
+            period = out.get("eps_trend", {}).get("period", "+1y")
+            if period in rv.index:
+                row = rv.loc[period]
+                out["eps_rev"] = {"up30": _f(row.get("upLast30days")), "down30": _f(row.get("downLast30days"))}
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        cal = t.calendar
+        dates = cal.get("Earnings Date") if isinstance(cal, dict) else None
+        if dates:
+            out["earnings_date"] = min(d for d in dates).isoformat()
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _f(x):
+    try:
+        v = float(x)
+        return v if v == v else None
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_info(symbol: str) -> dict | None:
     def go():
-        info = yf.Ticker(symbol).info
+        t = yf.Ticker(symbol)
+        info = t.info
         if not info or ("regularMarketPrice" not in info and "currentPrice" not in info):
             raise ValueError("leere Antwort")
-        return {k: info.get(k) for k in INFO_FIELDS}
+        out = {k: info.get(k) for k in INFO_FIELDS}
+        out.update(_extras(t))
+        return out
     return _retry(go, f"info {symbol}")
+
+
+def fetch_statements(symbol: str) -> dict | None:
+    """Jahresabschlüsse von Yahoo: GuV, Cashflow, Bilanz (meist 4 Jahre)."""
+    def go():
+        t = yf.Ticker(symbol)
+        out = {"is": t.income_stmt, "cf": t.cashflow, "bs": t.balance_sheet}
+        if all(v is None or v.empty for v in out.values()):
+            raise ValueError("keine Abschlüsse")
+        return out
+    return _retry(go, f"Abschlüsse {symbol}", tries=2)
 
 
 def fetch_prices(symbols: list[str], period: str = "2y", chunk: int = 80, min_rows: int = 21) -> dict[str, pd.DataFrame]:

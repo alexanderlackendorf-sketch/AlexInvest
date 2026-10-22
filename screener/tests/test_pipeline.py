@@ -12,7 +12,9 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-from screener.pipeline import metrics, run, scoring, sec, technicals, targets
+import datetime as dt
+
+from screener.pipeline import history, metrics, run, scoring, sec, technicals, targets, tracking
 
 SECTORS = ["Technology", "Healthcare", "Financial Services", "Industrials", "Energy"]
 
@@ -159,6 +161,78 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(sec.split_factor(7.36, 14.72), 0.5)
         self.assertEqual(sec.split_factor(3.58, 0.895), 4)
         self.assertIsNone(sec.split_factor(4.91, 4.21905))
+
+
+class HistoryTest(unittest.TestCase):
+    def _years(self):
+        ys = []
+        for i, yr in enumerate(range(2019, 2026)):
+            ys.append({"fy_end": f"{yr}-12-31", "revenue": 100.0 * 1.1 ** i, "op_income": 20.0 * 1.1 ** i,
+                       "net_income": 15.0 * 1.1 ** i, "eps": 1.5 * 1.1 ** i, "shares": 10.0, "ocf": 18.0 * 1.1 ** i,
+                       "capex": 3.0 * 1.1 ** i, "sbc": 1.0, "pretax": 20.0 * 1.1 ** i, "tax": 4.0 * 1.1 ** i,
+                       "equity": 80.0, "debt": 30.0, "cash": 10.0})
+        return ys
+
+    def test_derive(self):
+        h = history.derive(self._years())
+        self.assertAlmostEqual(h["rev_cagr"], 0.10, places=6)
+        self.assertAlmostEqual(h["eps_cagr"], 0.10, places=6)
+        self.assertAlmostEqual(h["share_cagr"], 0.0, places=6)
+        self.assertAlmostEqual(h["op_margin_avg5"], 0.20, places=6)
+        self.assertAlmostEqual(h["op_margin_std"], 0.0, places=6)
+        self.assertAlmostEqual(h["cash_conversion"], 1.0, places=6)   # (18-3)/15
+        # ROIC letztes Jahr: 20*1.1^6 * (1-0.2) / (80+30-10)
+        self.assertAlmostEqual(h["roic_last"], 20 * 1.1 ** 6 * 0.8 / 100, places=6)
+        self.assertEqual(len(h["hist_table"]), 7)
+
+    def test_missing_tax_gives_no_roic(self):
+        ys = self._years()
+        for y in ys:
+            y["tax"] = None
+        self.assertIsNone(history.derive(ys)["roic_med5"])
+
+    def test_split_adjust(self):
+        ys = [{"fy_end": "2022-01-31", "eps": 10.0, "shares": 100.0}, {"fy_end": "2023-01-31", "eps": 12.0, "shares": 100.0},
+              {"fy_end": "2024-01-31", "eps": 1.3, "shares": 1000.0}]
+        history.split_adjust(ys)
+        self.assertAlmostEqual(ys[0]["eps"], 1.0)
+        self.assertAlmostEqual(ys[1]["shares"], 1000.0)
+
+    def test_hist_pe(self):
+        idx = pd.bdate_range("2019-01-01", "2026-06-30")
+        close = pd.Series(30.0, index=idx)
+        h = history.derive(self._years(), close)
+        self.assertIsNotNone(h["pe_hist_med5"])
+        self.assertIsNone(history.derive(self._years(), close, same_currency=False)["pe_hist_med5"])
+
+
+class ValuationTest(unittest.TestCase):
+    def test_implied_growth_roundtrip(self):
+        ev = targets._dcf_value(100.0, 0.07)
+        self.assertAlmostEqual(targets.implied_growth(100.0, ev), 0.07, places=3)
+        self.assertIsNone(targets.implied_growth(-5.0, 1000.0))
+        self.assertIsNone(targets.implied_growth(float("nan"), 1000.0))
+
+
+class TrackingTest(unittest.TestCase):
+    def test_snapshot_and_evaluate(self):
+        rows = [{"symbol": f"S{i}", "score": float(10 - i % 10), "verdict_code": "kandidat" if i < 5 else "meiden"}
+                for i in range(40)]
+        state = tracking.snapshot({}, dt.date(2026, 1, 5), rows)
+        state = tracking.snapshot(state, dt.date(2026, 1, 7), rows)   # gleiche Woche -> keine zweite Kohorte
+        self.assertEqual(len(state["snapshots"]), 1)
+        idx = pd.bdate_range("2026-01-01", periods=300)
+        closes = {}
+        for i in range(40):
+            drift = 0.002 if i < 5 else 0.0
+            closes[f"S{i}"] = pd.Series([100 * (1 + drift) ** k for k in range(300)], index=idx)
+        closes["^GSPC"] = pd.Series(100.0, index=idx)
+        ev = tracking.evaluate(state, closes)
+        h = ev["horizons"]["1M"]
+        self.assertEqual(h["cohorts"], 1)
+        self.assertGreater(h["kandidat"], h["universe"])
+        self.assertEqual(h["hit_rate"], 1.0)
+        self.assertAlmostEqual(h["S&P 500"], 0.0)
 
 
 class TechnicalsTest(unittest.TestCase):

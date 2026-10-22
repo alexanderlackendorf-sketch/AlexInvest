@@ -12,8 +12,10 @@ import math
 FINANCIAL_SECTORS = {"Financial Services", "Financials"}
 REIT_SECTORS = {"Real Estate"}
 # Kennzahlen, die für die Branche wirtschaftlich ungeeignet sind -> [NICHT ANWENDBAR] statt "fehlt"
-NA_FINANCIAL = ["ev_ebitda", "fcf_yield", "fcf_margin", "net_debt_ebitda", "gross_margin"]
-NA_REIT = ["pe_ttm", "pe_fwd", "peg", "eps_growth_fwd", "earn_growth"]  # Immobilien: FFO/AFFO statt Gewinn
+NA_FINANCIAL = ["ev_ebitda", "fcf_yield", "fcf_margin", "net_debt_ebitda", "gross_margin",
+                "roic_med5", "cash_conversion", "implied_growth", "fcf_margin_avg5"]
+NA_REIT = ["pe_ttm", "pe_fwd", "peg", "eps_growth_fwd", "earn_growth",
+           "eps_cagr", "pe_vs_hist"]  # Immobilien: FFO/AFFO statt Gewinn
 
 
 def _num(x):
@@ -132,6 +134,8 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
                                        raw=_div(ev_raw, ebitda))
         if m["ev_ebitda"] and m["ev_ebitda"] > 200:
             m["ev_ebitda"] = None
+    m["ev_fin"] = ev if not is_fin else None
+    m["fcf_fin"] = fcf
     m["fcf_yield"] = _div(fcf, mcap_fin) if not is_fin else None
     m["fcf_margin"] = _div(fcf, revenue) if (not is_fin and revenue and revenue > 0) else None
     m["net_debt_ebitda"] = ((debt - cash) / ebitda
@@ -156,6 +160,25 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
     if m["div_yield"] and m["div_yield"] > 0.25:
         flags.append("dividende_unplausibel")
         m["div_yield"] = None
+
+    # Gewinnrevisionen: Veränderung der Konsens-EPS-Schätzung und Saldo der Anpassungen [BERECHNET aus SCHÄTZUNGEN]
+    tr = info.get("eps_trend") or {}
+    cur_e, e90, e30 = _num(tr.get("current")), _num(tr.get("d90")), _num(tr.get("d30"))
+    m["rev_eps_90d"] = (cur_e / e90 - 1) if (cur_e is not None and e90 and e90 > 0 and cur_e > 0) else None
+    m["rev_eps_30d"] = (cur_e / e30 - 1) if (cur_e is not None and e30 and e30 > 0 and cur_e > 0) else None
+    for k in ("rev_eps_90d", "rev_eps_30d"):
+        if m[k] is not None and not -0.8 < m[k] < 2:
+            flags.append("revision_unplausibel")
+            m[k] = None
+    rv = info.get("eps_rev") or {}
+    up, dn = _num(rv.get("up30")), _num(rv.get("down30"))
+    n_an_rev = int(_num(info.get("numberOfAnalystOpinions")) or 0)
+    m["rev_up30"], m["rev_down30"] = up, dn
+    # Saldo Anhebungen minus Senkungen (30 Tage) je Analyst: +1 = alle heben an, -1 = alle senken
+    m["rev_breadth"] = ((up - dn) / max(n_an_rev, up + dn)
+                        if up is not None and dn is not None and n_an_rev >= 3 else None)
+    m["eps_trend_period"] = tr.get("period")
+    m["earnings_date"] = info.get("earnings_date")
 
     # Analysten (Kursziele in Handelswährung)
     n_an = int(_num(info.get("numberOfAnalystOpinions")) or 0)

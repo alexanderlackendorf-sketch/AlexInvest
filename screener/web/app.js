@@ -35,7 +35,11 @@ const TAG = {
   fcf_yield: "BERECHNET", pb: "BERECHNET", roe: "IST", op_margin: "IST", gross_margin: "IST", fcf_margin: "BERECHNET",
   net_debt_ebitda: "BERECHNET", rev_growth: "IST", earn_growth: "IST", eps_growth_fwd: "BERECHNET aus SCHÄTZUNG",
   eps: "IST / SCHÄTZUNG", div_yield: "BERECHNET", payout: "IST", beta: "IST", vol_1y: "BERECHNET",
+  roic_med5: "BERECHNET", op_margin_std: "BERECHNET", cash_conversion: "BERECHNET", share_cagr: "BERECHNET",
+  rev_cagr: "BERECHNET", eps_cagr: "BERECHNET", pe_vs_hist: "BERECHNET", implied_growth: "BERECHNET aus SCHÄTZUNG",
+  rev_eps_90d: "BERECHNET aus SCHÄTZUNG", rev_breadth: "BERECHNET aus SCHÄTZUNG", sbc_rev: "BERECHNET",
 };
+const ampelOf = (v) => !isNum(v) ? "grau" : v >= 6.5 ? "gruen" : v < 3.5 ? "rot" : "gelb";
 const flagText = (f) => f.startsWith("fundamentaldaten_vom_")
   ? `Fundamentaldaten vom ${f.slice(21)} (heutiger Abruf fehlgeschlagen)`
   : FLAG_TEXT[f] || f.replace(/_/g, " ");
@@ -105,9 +109,13 @@ const COLS = [
   { k: "peg", t: "PEG", n: true, r: (r) => fmt(r.peg, 2) },
   { k: "ev_ebitda", t: "EV/EBITDA", n: true, r: (r) => fmt(r.ev_ebitda) },
   { k: "fcf_yield", t: "FCF-Rend.", n: true, r: (r) => pctPlain(r.fcf_yield) },
+  { k: "roic_med5", t: "ROIC 5J", n: true, r: (r) => pctPlain(r.roic_med5) },
   { k: "roe", t: "EKR", n: true, r: (r) => pctPlain(r.roe) },
   { k: "op_margin", t: "Op. Marge", n: true, r: (r) => pctPlain(r.op_margin) },
   { k: "rev_growth", t: "Umsatz Δ", n: true, r: (r) => pct(r.rev_growth) },
+  { k: "rev_cagr", t: "Umsatz 5J", n: true, r: (r) => pct(r.rev_cagr) },
+  { k: "pe_vs_hist", t: "KGV/Hist", n: true, r: (r) => pct(r.pe_vs_hist, 0) },
+  { k: "rev_eps_90d", t: "Rev. 90T", n: true, r: (r) => pct(r.rev_eps_90d) },
   { k: "div_yield", t: "Div.", n: true, r: (r) => pctPlain(r.div_yield) },
   { k: "analyst_upside", t: "Analysten", n: true, r: (r) => pct(r.analyst_upside) },
   { k: "zone", t: "Buy-Zone", n: true, v: zoneDist, r: (r) => r.in_buy_zone ? '<span class="tag zone">IN ZONE</span>' : pct(zoneDist(r), 1, false) },
@@ -131,6 +139,9 @@ const PRESETS = [
   { id: "dip", label: "Qualität im Rücksetzer", f: (r) => r.ampeln?.["Qualität"] === "gruen" && r.ampeln?.["Bewertung"] !== "rot" && r.verdict_code !== "nab" && (r.dist_sma200 < 0 || r.rsi14 < 35) },
   { id: "div", label: "Dividenden-Qualität", f: (r) => r.div_yield >= 0.03 && r.ampeln?.["Qualität"] !== "rot" && r.pillars["Qualität"] >= 6 && (r.payout == null || r.payout < 0.8) },
   { id: "growth", label: "Wachstum vernünftig bewertet", f: (r) => r.rev_growth >= 0.12 && r.peg > 0 && r.peg < 1.5 && r.ampeln?.["Qualität"] !== "rot" },
+  { id: "compounder", label: "Compounder (ROIC, Wachstum, keine Verwässerung)", f: (r) => r.roic_med5 >= 0.15 && r.rev_cagr >= 0.08 && (r.share_cagr == null || r.share_cagr <= 0.005) && r.op_margin_std != null && r.op_margin_std < 0.05 },
+  { id: "revs", label: "Positive Revisionen + Qualität", f: (r) => r.rev_eps_90d >= 0.03 && r.rev_breadth > 0 && r.ampeln?.["Qualität"] === "gruen" },
+  { id: "hist", label: "Unter eigener Bewertungshistorie", f: (r) => r.pe_vs_hist <= -0.2 && r.ampeln?.["Qualität"] !== "rot" && !(r.flags || []).includes("zyklik_spitzengewinn") },
   { id: "warn", label: "Zykliker-/Value-Trap-Warnung", f: (r) => (r.flags || []).some((f) => f === "zyklik_spitzengewinn" || f === "value_trap_risiko") },
   { id: "risers", label: "Score-Aufsteiger", f: (r) => r.score_chg_1w >= 0.8 },
 ];
@@ -159,6 +170,7 @@ async function load() {
   render();
   method();
   movers();
+  trackingView();
   const hash = decodeURIComponent(location.hash.slice(1));
   if (hash) openDetail(hash);
 }
@@ -323,6 +335,37 @@ function movers() {
   $("#zoneList").innerHTML = mini(rated.filter((r) => ["kandidat", "beobachten"].includes(r.verdict_code) && r.in_buy_zone).sort((a, b) => b.score - a.score).slice(0, 20));
 }
 
+/* ---------- Erfolgskontrolle ---------- */
+function trackingView() {
+  const t = DATA.meta.tracking;
+  const el = $("#track-panel");
+  if (!t || !t.cohorts) { el.innerHTML = "<h3>Erfolgskontrolle</h3><p class='small'>Noch keine Kohorten gespeichert.</p>"; return; }
+  const groups = [["kandidat", "Kandidaten für Einzelanalyse"], ["top_decile", "Oberstes Score-Zehntel"], ["universe", "Ganzes Universum (gleichgewichtet)"],
+    ["bottom_decile", "Unterstes Score-Zehntel"], ["S&P 500", "S&P 500 (Index)"], ["DAX", "DAX (Index)"]];
+  const H = { ...t.horizons, ...t.running };
+  const hs = Object.keys(H);
+  const cell = (v) => isNum(v) ? pct(v) : dash;
+  el.innerHTML = `<h3>Erfolgskontrolle · funktioniert das Rating?</h3>
+    <p class="small">Seit <b>${esc(t.since)}</b> wird einmal pro Woche festgehalten, welche Aktien in welcher Gruppe waren (${t.cohorts} Kohorte${t.cohorts === 1 ? "" : "n"}).
+    Gemessen wird die Rendite ab dem Schlusskurs des nächsten Handelstags, gleichgewichtet, in Handelswährung, ohne Dividenden und Kosten.
+    Ein Horizont zählt erst, wenn er für eine Kohorte vollständig abgelaufen ist. „Seit Start“ zeigt die laufende Entwicklung aller Kohorten.</p>
+    <div style="overflow-x:auto"><table class="metrics">
+      <tr><td class="muted">Gruppe</td>${hs.map((h) => `<td class="n muted">${esc(h)}</td>`).join("")}</tr>
+      ${groups.map(([k, l]) => `<tr><td>${l}</td>${hs.map((h) => `<td class="n">${cell(H[h][k])}</td>`).join("")}</tr>`).join("")}
+      <tr><td><b>Kandidaten − Universum</b></td>${hs.map((h) => `<td class="n"><b>${isNum(H[h].kandidat) && isNum(H[h].universe) ? pct(H[h].kandidat - H[h].universe) : dash}</b></td>`).join("")}</tr>
+      <tr><td><b>Oberstes − unterstes Zehntel</b></td>${hs.map((h) => `<td class="n"><b>${cell(H[h].spread)}</b></td>`).join("")}</tr>
+      <tr><td>Trefferquote Kandidaten &gt; Universum</td>${hs.map((h) => `<td class="n">${isNum(H[h].hit_rate) ? pctPlain(H[h].hit_rate, 0) : dash}</td>`).join("")}</tr>
+      <tr><td class="muted">ausgewertete Kohorten</td>${hs.map((h) => `<td class="n muted">${H[h].cohorts}</td>`).join("")}</tr>
+    </table></div>
+    <h4>So liest du das</h4>
+    <ul class="small">
+      <li>Das Rating taugt etwas, wenn <b>Kandidaten − Universum</b> und <b>oberstes − unterstes Zehntel</b> über viele Kohorten positiv sind, die Trefferquote also deutlich über 50 % liegt.</li>
+      <li>Vor 3–6 Monaten und ohne mindestens 10–15 abgeschlossene Kohorten ist das statistisch nicht belastbar. Einzelne Wochen sind Zufall.</li>
+      <li>Kohorten überlappen sich (wöchentlich gebildet, monatelang gehalten), ihre Ergebnisse sind also nicht unabhängig.</li>
+      <li>Es gibt bewusst keinen Rückrechnungs-Backtest: Kostenlose Daten enthalten weder frühere Indexzusammensetzungen (Pleiten fehlen) noch frühere Analystenschätzungen. Das Ergebnis wäre geschönt.</li>
+    </ul>`;
+}
+
 /* ---------- Methodik & Datenqualität ---------- */
 function method() {
   const m = DATA.meta;
@@ -348,7 +391,7 @@ function method() {
     <b>Datenqualität</b> und <b>Einstiegszeitpunkt</b> (Chart). Jede Säule hat eine eigene Ampel. Grüne Ampeln werden nicht addiert.</p>
     <h4>Score 1–10</h4>
     <p class="small">Jede Kennzahl wird <b>innerhalb ihres Sektors</b> als Perzentil gemessen (keine universellen Schwellen).
-    Der Score ist das gewichtete Mittel aus Qualität, Bewertung und Wachstum, über das Universum auf 1–10 skaliert.
+    Der Score ist das gewichtete Mittel aus Qualität, Bewertung, Wachstum und Gewinnrevisionen, über das Universum auf 1–10 skaliert.
     <b>Rote Ampeln deckeln den Score:</b> Qualität 🔴 → max. 4, Bewertung 🔴 → max. 6, Value-Trap-Risiko → max. 6.
     Trend und Analysten fließen <b>nicht</b> in den Score ein. Analystenziele dienen nur zum Vergleich.</p>
     ${Object.entries(m.pillars).map(([n, p]) => `<h4>${esc(n)} · ${p.in_score ? `Gewicht ${F[0].format(p.weight * 100)} %` : "nicht im Score"}</h4>
@@ -368,8 +411,18 @@ function method() {
     <ul class="small">
       <li>Banken/Versicherer: EV/EBITDA, FCF und Bruttomarge [NICHT ANWENDBAR]. Stattdessen KBV und Gesamtkapitalrendite.</li>
       <li>REITs: KGV und Gewinnwachstum [NICHT ANWENDBAR] (FFO/AFFO nötig, nicht frei verfügbar). Kein KGV-Kursziel.</li>
-      <li>Zykliker (Energie, Rohstoffe, Halbleiter, Auto, Chemie …): Bei Gewinnsprung &gt; 40 % oder KGV &lt; 60 % des Sektormedians gilt die Warnung „möglicher Spitzengewinn“. Die Bewertung zählt dann höchstens neutral, und es gibt kein Modell-Kursziel.</li>
+      <li>Zykliker (Energie, Rohstoffe, Halbleiter, Auto, Chemie …): Bei Gewinnsprung &gt; 40 %, KGV &lt; 60 % des Sektormedians oder operativer Marge &gt; 150 % des eigenen 5-Jahres-Schnitts gilt die Warnung „möglicher Spitzengewinn“. Die Bewertung zählt dann höchstens neutral, und es gibt kein Modell-Kursziel.</li>
       <li>Value-Trap-Risiko: Bewertung 🟢, aber Umsatz rückläufig und Kurs mehr als 20 % im Minus (12-1M).</li>
+    </ul>
+    <h4>Mehrjahres-Daten</h4>
+    <ul class="small">
+      <li>US-Werte: bis 10 Geschäftsjahre aus den SEC-10-K-Berichten. Übrige: meist 4 Jahre aus den Yahoo-Jahresabschlüssen. EPS und Aktienzahl werden um spätere Aktiensplits bereinigt.</li>
+      <li>ROIC = operatives Ergebnis × (1 − tatsächliche Steuerquote) / (Eigenkapital + Finanzschulden − liquide Mittel), Median über 5 Jahre. Ohne berichtete Steuerquote gibt es keinen ROIC.</li>
+      <li>Margen-Schwankung = Standardabweichung der operativen Marge über 5 Jahre (niedriger = stabiler). Cash Conversion = Summe FCF / Summe Gewinn über 5 Jahre.</li>
+      <li>Historisches KGV = Kurs am Geschäftsjahresende / verwässertes EPS, Median über 5 Jahre. Nur bei gleicher Kurs- und Bilanzwährung.</li>
+      <li>Reverse-DCF: Das FCF-Wachstum über 10 Jahre, das den heutigen Unternehmenswert rechtfertigt (Kapitalkosten 9 %, danach 2,5 %). Niedriger = geringere Erwartungen im Kurs.</li>
+      <li>Gewinnrevisionen: Veränderung der Konsens-EPS-Schätzung über 90 Tage und Saldo aus Anhebungen und Senkungen über 30 Tage.</li>
+      <li>Diese Zusatzkennzahlen zählen nicht in die Datenabdeckung. Fehlen sie (häufig bei Auslandswerten), entfällt nur ihr Gewicht.</li>
     </ul>
     <h4>Daten und Kennzeichnung</h4>
     <ul class="small">
@@ -424,6 +477,23 @@ function openDetail(sym) {
     M("Dividendenrendite", "div_yield", pctPlain(r.div_yield), null), M("Ausschüttungsquote", "payout", pctPlain(r.payout, 0), null),
     M("Beta", "beta", fmt(r.beta, 2), null), M("Volatilität 1J", "vol_1y", pctPlain(r.vol_1y, 0), null),
   ];
+  const hs = r.hist_source ? `${esc(r.hist_source)}, ${r.hist_years} Jahre` : "keine Mehrjahresdaten";
+  const histRows = [
+    M("ROIC (Median 5J)", "roic_med5", pctPlain(r.roic_med5)),
+    M("Operative Marge Ø 5J ± Schwankung", "op_margin_std", isNum(r.op_margin_avg5) ? `${pctPlain(r.op_margin_avg5)} ± ${pctPlain(r.op_margin_std)}` : dash, "op_margin_std", r.op_margin_avg5),
+    M("Cash Conversion 5J (FCF/Gewinn)", "cash_conversion", fmt(r.cash_conversion, 2)),
+    M("Aktienzahl p.a. (− = Rückkauf)", "share_cagr", pct(r.share_cagr)),
+    M("Aktienvergütung / Umsatz", "sbc_rev", pctPlain(r.sbc_rev), null),
+    M("Umsatz-CAGR 5J", "rev_cagr", pct(r.rev_cagr)), M("EPS-CAGR 5J", "eps_cagr", pct(r.eps_cagr)),
+    M("Verlustjahre (5J)", "loss_years5", isNum(r.loss_years5) && r.hist_years >= 3 ? String(r.loss_years5) : dash, null, r.hist_years >= 3 ? r.loss_years5 : null),
+    M("KGV vs. eigener 5J-Median", "pe_vs_hist", isNum(r.pe_vs_hist) ? `${pct(r.pe_vs_hist, 0)} <span class="muted">(Median ${fmt(r.pe_hist_med5)})</span>` : dash),
+  ];
+  // Reverse-DCF: eingepreistes FCF-Wachstum gegen tatsächliches 5J-Umsatzwachstum
+  const ig = r.implied_growth;
+  const igJudge = !isNum(ig) || !isNum(r.rev_cagr) ? "" : ig > r.rev_cagr + 0.05 ? "anspruchsvoll" : ig < r.rev_cagr - 0.03 ? "konservativ" : "plausibel";
+  const revHtml = isNum(r.rev_eps_90d) || isNum(r.rev_breadth) ? `<dl class="kv">
+      <dt>EPS-Schätzung ${esc(r.eps_trend_period === "0y" ? "lfd. GJ" : "nächstes GJ")}</dt><dd>${pct(r.rev_eps_90d)} (90 T) · ${pct(r.rev_eps_30d)} (30 T)</dd>
+      <dt>Anpassungen 30 T</dt><dd>${isNum(r.rev_up30) ? `▲ ${r.rev_up30} / ▼ ${r.rev_down30}` : dash}</dd></dl>` : '<div class="note">Keine Revisionsdaten verfügbar.</div>';
   const zones = stale ? '<div class="note">Kein aktueller Referenzkurs. Ohne ihn keine Buy-Zonen und keine Orderlimits.</div>'
     : (r.buy_zones || []).map((z) =>
     `<div class="zone-card"><b>${esc(z.kind)}</b>: ${money(z.low, r.currency)} – ${money(z.high, r.currency)}<br>
@@ -449,9 +519,11 @@ function openDetail(sym) {
     ["Unternehmensqualität", "Qualität", `Säule ${pv("Qualität")}`],
     ["Bewertung", "Bewertung", `Säule ${pv("Bewertung")}`],
     ["Wachstum", "Wachstum", `Säule ${pv("Wachstum")}`],
+    ["Gewinnrevisionen", "_rev", `Säule ${pv("Revisionen")}`],
     ["Datenqualität", "Daten", (r.data_why || []).join(", ")],
     ["Einstieg (Chart)", "Einstieg", `${esc(r.trend)}${r.in_buy_zone ? " · in Buy-Zone" : ""} · Trend-Säule ${pv("Trend")} (nicht im Score)`],
-  ].map(([l, k, d]) => `<tr><td>${AMPEL[a[k] || "grau"]} ${l}</td><td class="l small">${d}</td></tr>`).join("");
+  ].map(([l, k, d]) => `<tr><td>${AMPEL[k === "_rev" ? ampelOf(r.pillars["Revisionen"]) : a[k] || "grau"]} ${l}</td><td class="l small">${d}</td></tr>`).join("");
+  const nextDate = r.earnings_date ? new Date(r.earnings_date).toLocaleDateString("de-DE") : null;
   const priceTime = r.price_time ? new Date(r.price_time).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : null;
   const eurNote = r.currency !== "EUR" && isNum(r.price_eur)
     ? ` · ≈ ${money(r.price_eur, "EUR")} <span class="muted">(Umrechnung ${fmt(m.fx_to_eur[r.currency], 4)} – kein ausführbarer EUR-Kurs)</span>` : "";
@@ -515,6 +587,10 @@ function openDetail(sym) {
         <table class="metrics">${metricRows.map((x) => `<tr><td>${x.label}</td><td class="n">${x.html}</td>
           <td class="l"><span class="ktag">${esc(tag(x.k, x.raw))}</span></td><td class="n">${x.pk ? pctRow(x.pk) : ""}</td></tr>`).join("")}</table>
         <div class="note">Fundamentaldaten Stand ${esc(r.fund_date)} (letzte zwölf Monate bzw. jüngstes Quartal laut Yahoo; GAAP/IFRS gemischt mit bereinigten Werten möglich) · Quelle Yahoo Finance · Bilanzwährung ${esc(r.financial_currency || "–")}</div>
+        <h3 style="margin-top:16px">Mehrjahres-Qualität <span class="muted" style="text-transform:none;letter-spacing:0">· ${hs}</span></h3>
+        <table class="metrics">${histRows.map((x) => `<tr><td>${x.label}</td><td class="n">${x.html}</td>
+          <td class="l"><span class="ktag">${esc(tag(x.k, x.raw))}</span></td><td class="n">${x.pk ? pctRow(x.pk) : ""}</td></tr>`).join("")}</table>
+        <div id="histBox"></div>
       </div>
       <div class="panel">
         <h3>Modell-Bewertung <span class="muted" style="text-transform:none;letter-spacing:0">· [BERECHNET aus SCHÄTZUNGEN]</span></h3>
@@ -532,6 +608,15 @@ function openDetail(sym) {
             <tr><td>3 Jahre</td><td class="n">${money(t.y3, r.currency)}</td><td class="n">${pct(t.y3_upside)}</td></tr></table>
           <div class="note">Faires KGV ${fmt(t.fair_pe)} (eigenes und Sektor-KGV, max. ±25 %). Basis: Konsens-EPS des nächsten Geschäftsjahres [SCHÄTZUNG]. Kein DCF. Die Einzelanalyse ersetzt es nicht. Ein Bear-Szenario ist keine Verlustuntergrenze.</div>`
         : `<div class="note">${noModel}</div>`}
+        <h4>Eingepreiste Erwartung (Reverse-DCF) [BERECHNET aus SCHÄTZUNG]</h4>
+        ${isNum(ig) ? `<dl class="kv"><dt>Eingepreistes FCF-Wachstum</dt><dd>${pct(ig)} p.a. über 10 Jahre</dd>
+          <dt>Zum Vergleich</dt><dd>Umsatz-CAGR 5J ${pct(r.rev_cagr)}${igJudge ? ` → <b>${igJudge}</b>` : ""}</dd></dl>
+          <div class="note">Annahmen: Kapitalkosten 9 %, danach 2,5 % Dauerwachstum, Basis FCF der letzten 12 Monate und Unternehmenswert (EV). Einheitliche Annahmen für die Vergleichbarkeit, ersetzt keine individuelle DCF.</div>`
+          : `<div class="note">${na.has("implied_growth") ? "Nicht anwendbar (Finanzwert)." : "Nicht berechenbar (FCF oder EV nicht positiv)."}</div>`}
+        <h4>Gewinnrevisionen [SCHÄTZUNG]</h4>
+        ${revHtml}
+        <h4>Nächster Prüfpunkt</h4>
+        <div class="small">${nextDate ? `Quartalszahlen voraussichtlich am <b>${esc(nextDate)}</b> (Yahoo-Kalender)` : '<span class="muted">Kein Termin bekannt</span>'}</div>
         <h4>Analysten-Konsens 12M [SCHÄTZUNG] – nur zum Vergleich</h4>
         ${isNum(r.analyst_target) ? `<dl class="kv"><dt>Ø Kursziel</dt><dd>${money(r.analyst_target, r.currency)} (${pct(r.analyst_upside)})</dd>
           <dt>Empfehlung</dt><dd>${fmt(r.analyst_rec, 1)} <span class="muted">(1 = Strong Buy … 5 = Sell)</span></dd>
@@ -549,7 +634,23 @@ function openDetail(sym) {
   $("#closeBtn").onclick = closeDetail;
   $("#wBtn").onclick = () => { toggleWatch(r.symbol); $("#wBtn").textContent = WATCH.has(r.symbol) ? "★ Watchlist" : "☆ Watchlist"; };
   $("#claudeBtn").onclick = () => copyPrompt(r);
-  drawChart(r);
+  fetch(PX_URL(r.symbol)).then((x) => x.json()).then((px) => { renderHist(px); drawChart(r, px); })
+    .catch(() => { $("#chart").innerHTML = '<div class="empty">Kursdaten nicht verfügbar.</div>'; });
+}
+
+function renderHist(px) {
+  const h = px.hist || [];
+  if (h.length < 2) return;
+  const cur = px.hist_currency || "";
+  const rows = [
+    ["Umsatz", (y) => bn(y.revenue)], ["Op. Marge", (y) => pctPlain(y.op_margin)], ["EPS verw.", (y) => fmt(y.eps, 2)],
+    ["Free Cashflow", (y) => bn(y.fcf)], ["ROIC", (y) => pctPlain(y.roic)], ["Aktien (verw.)", (y) => bn(y.shares)],
+  ];
+  const ys = h.slice(-6);
+  $("#histBox").innerHTML = `<h4>Geschäftsjahre [IST, ${esc(px.hist_source || "")}] · ${esc(cur)}</h4>
+    <div style="overflow-x:auto"><table class="metrics"><tr><td></td>${ys.map((y) => `<td class="n muted">${esc(y.fy_end.slice(0, 7))}</td>`).join("")}</tr>
+    ${rows.map(([l, f]) => `<tr><td>${l}</td>${ys.map((y) => `<td class="n">${f(y)}</td>`).join("")}</tr>`).join("")}</table></div>
+    <div class="note">FCF = operativer Cashflow − Investitionen in Sachanlagen. ROIC = operatives Ergebnis × (1 − tatsächliche Steuerquote) / (Eigenkapital + Finanzschulden − liquide Mittel). EPS und Aktienzahl um spätere Aktiensplits bereinigt.</div>`;
 }
 
 function copyPrompt(r) {
@@ -566,6 +667,8 @@ Orientierungswerte aus meinem Screener. Nicht als Quelle verwenden, alle Zahlen 
 - Referenzkurs ${f2(r.price, 2)} ${r.currency} (Yahoo, Kurszeitpunkt ${r.price_time || "unbekannt"}, Fundamentaldaten Stand ${r.fund_date})
 - Screener-Score ${r.score ?? "n/a"} · Urteil: ${r.verdict} · Ampeln: Qualität ${AMPEL[a["Qualität"] || "grau"]}, Bewertung ${AMPEL[a["Bewertung"] || "grau"]}, Wachstum ${AMPEL[a["Wachstum"] || "grau"]}, Daten ${AMPEL[a["Daten"] || "grau"]}, Einstieg ${AMPEL[a["Einstieg"] || "grau"]}
 - KGV ttm ${f2(r.pe_ttm)}, KGV fwd ${f2(r.pe_fwd)}, EV/EBITDA ${f2(r.ev_ebitda)}, FCF-Rendite ${p1(r.fcf_yield)}, ROE ${p1(r.roe)}, op. Marge ${p1(r.op_margin)}, Umsatzwachstum ${p1(r.rev_growth)}
+- ROIC 5J ${p1(r.roic_med5)}, Umsatz-CAGR 5J ${p1(r.rev_cagr)}, Aktienzahl p.a. ${p1(r.share_cagr)}, KGV vs. 5J-Median ${p1(r.pe_vs_hist)}, eingepreistes FCF-Wachstum (Reverse-DCF, 9 %/2,5 %) ${p1(r.implied_growth)}
+- EPS-Revision 90 Tage ${p1(r.rev_eps_90d)} · nächster Termin ${r.earnings_date || "unbekannt"}
 - Trend: ${r.trend} · Buy-Zonen laut Screener: ${z}
 - Prüfhinweise des Screeners: ${hints}`;
   const done = () => toast("Prompt kopiert. Im Projekt „Aktienanalyse“ einfügen.");
@@ -577,11 +680,12 @@ function toast(msg) {
 }
 
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-async function drawChart(r) {
+async function drawChart(r, px) {
   const box = $("#chart");
   if (!window.LightweightCharts) { box.innerHTML = '<div class="empty">Chart-Bibliothek nicht geladen.</div>'; return; }
-  let px;
-  try { px = await (await fetch(PX_URL(r.symbol))).json(); } catch { box.innerHTML = '<div class="empty">Kursdaten nicht verfügbar.</div>'; return; }
+  if (!px) {
+    try { px = await (await fetch(PX_URL(r.symbol))).json(); } catch { box.innerHTML = '<div class="empty">Kursdaten nicht verfügbar.</div>'; return; }
+  }
   if (chart) chart.remove();
   chart = LightweightCharts.createChart(box, {
     autoSize: true,

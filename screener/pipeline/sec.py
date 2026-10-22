@@ -12,7 +12,7 @@ import time
 
 import requests
 
-from . import fetch
+from . import fetch, history
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ REVENUE_CONCEPTS = [
     "RevenueFromContractWithCustomerIncludingAssessedTax",
 ]
 TOLERANCE = 0.05
-CACHE_VERSION = 3
+CACHE_VERSION = 4  # 4: speichert zusätzlich die 10-Jahres-Historie
 SPLIT_FACTORS = (2, 3, 4, 5, 8, 10, 15, 20, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 8, 1 / 10, 1 / 15, 1 / 20)
 
 
@@ -99,6 +99,10 @@ def verify_company(symbol: str, cik: int) -> dict:
     eps = latest_annual(facts, ["EarningsPerShareDiluted"], "USD/shares")
     anchor = ni or rev
     res = {"checked": dt.date.today().isoformat(), "cik": cik, "status": "keine_10k_daten", "v": CACHE_VERSION}
+    try:
+        res["history"] = history.extract_sec(facts)
+    except Exception as e:  # noqa: BLE001
+        log.warning("SEC-Historie %s: %s", symbol, e)
     if anchor is None:
         return res
     stmt = fetch.fetch_income_annual(symbol)

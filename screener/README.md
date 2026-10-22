@@ -8,12 +8,14 @@ Täglich aktualisierter Aktienscreener für S&P 500, DAX und rund 85 globale Qua
 GitHub Actions (Mo–Fr 22:17 UTC)
   └─ screener/pipeline  (Python)
        universe.py   S&P 500 + DAX live von Wikipedia, Weltliste aus config/universe.json
-       fetch.py      Kurse (2 Jahre) + Fundamentaldaten von Yahoo Finance
+       fetch.py      Kurse (5 Jahre), Fundamentaldaten, Revisionen, Termine von Yahoo Finance
        metrics.py    Kennzahlen selbst berechnen, gegen Yahoo prüfen, Unplausibles verwerfen
        technicals.py SMA, RSI, ATR, Unterstützungen -> Buy-Zonen
        scoring.py    Rating 1–10, getrennte Ampeln und Urteil nach den Projekt-Regeln „Aktienanalyse“
        targets.py    faire Wertspanne, Sicherheitsmarge, Bear/Base/Bull, Kurspfad 1/2/3 Jahre
        sec.py        US-Abschlüsse gegen SEC EDGAR 10-K prüfen (rollierend)
+       history.py    Mehrjahres-Historie (SEC bis 10 J., sonst Yahoo): ROIC, Margen, Cash Conversion, Verwässerung
+       tracking.py   Erfolgskontrolle: wöchentliche Kohorten vs. Universum, S&P 500, DAX
   └─ Datenstand  -> Branch `screener-data` (ein einziger Commit, wird überschrieben)
   └─ Website     -> GitHub Pages (screener/web + Daten)
 ```

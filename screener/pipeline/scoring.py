@@ -22,16 +22,20 @@ import pandas as pd
 
 # (Kennzahl, höher_ist_besser)
 PILLARS: dict[str, dict] = {
-    "Qualität": {"weight": 0.40, "in_score": True, "metrics": [
-        ("roe", True), ("op_margin", True), ("gross_margin", True), ("fcf_margin", True),
-        ("net_debt_ebitda", False), ("roa_fin", True),
+    "Qualität": {"weight": 0.35, "in_score": True, "metrics": [
+        ("roic_med5", True), ("roe", True), ("op_margin", True), ("gross_margin", True), ("fcf_margin", True),
+        ("net_debt_ebitda", False), ("roa_fin", True), ("op_margin_std", False), ("cash_conversion", True),
+        ("share_cagr", False),
     ]},
-    "Bewertung": {"weight": 0.35, "in_score": True, "metrics": [
+    "Bewertung": {"weight": 0.30, "in_score": True, "metrics": [
         ("pe_fwd", False), ("pe_ttm", False), ("ev_ebitda", False), ("fcf_yield", True), ("peg", False),
-        ("pb_fin", False),
+        ("pb_fin", False), ("pe_vs_hist", False), ("implied_growth", False),
     ]},
     "Wachstum": {"weight": 0.25, "in_score": True, "metrics": [
-        ("rev_growth", True), ("earn_growth", True), ("eps_growth_fwd", True),
+        ("rev_growth", True), ("earn_growth", True), ("eps_growth_fwd", True), ("rev_cagr", True), ("eps_cagr", True),
+    ]},
+    "Revisionen": {"weight": 0.10, "in_score": True, "metrics": [
+        ("rev_eps_90d", True), ("rev_breadth", True),
     ]},
     "Trend": {"weight": 0.0, "in_score": False, "metrics": [
         ("mom_12_1", True), ("ret_3m", True), ("dist_sma200", True),
@@ -40,6 +44,10 @@ PILLARS: dict[str, dict] = {
         ("analyst_upside", True), ("analyst_rec", False),
     ]},
 }
+# Zusatzkennzahlen aus Historie/Revisionen: fehlen oft bei Nicht-US-Werten -> zählen nicht in die
+# Datenabdeckung (sonst würden Auslandswerte systematisch "nicht beurteilbar")
+OPTIONAL = {"roic_med5", "op_margin_std", "cash_conversion", "share_cagr", "pe_vs_hist", "implied_growth",
+            "rev_cagr", "eps_cagr", "rev_eps_90d", "rev_breadth"}
 SCORE_PILLARS = [n for n, p in PILLARS.items() if p["in_score"]]
 LABELS = {"pe_fwd": "KGV (fwd)", "pe_ttm": "KGV (ttm)", "ev_ebitda": "EV/EBITDA", "fcf_yield": "FCF-Rendite",
           "peg": "PEG", "pb_fin": "KBV (Finanzwerte/Immobilien)", "roe": "Eigenkapitalrendite",
@@ -47,7 +55,11 @@ LABELS = {"pe_fwd": "KGV (fwd)", "pe_ttm": "KGV (ttm)", "ev_ebitda": "EV/EBITDA"
           "net_debt_ebitda": "Nettoverschuldung/EBITDA", "roa_fin": "Gesamtkapitalrendite (Finanzwerte)",
           "rev_growth": "Umsatzwachstum", "earn_growth": "Gewinnwachstum", "eps_growth_fwd": "EPS-Wachstum erw.",
           "mom_12_1": "Momentum 12-1M", "ret_3m": "Performance 3M", "dist_sma200": "Abstand SMA200",
-          "analyst_upside": "Analysten-Upside", "analyst_rec": "Analysten-Empfehlung"}
+          "analyst_upside": "Analysten-Upside", "analyst_rec": "Analysten-Empfehlung",
+          "roic_med5": "ROIC (Median 5J)", "op_margin_std": "Margen-Schwankung 5J", "cash_conversion": "Cash Conversion 5J",
+          "share_cagr": "Aktienzahl-Veränderung p.a.", "pe_vs_hist": "KGV vs. eigener 5J-Median",
+          "implied_growth": "Eingepreistes FCF-Wachstum (Reverse-DCF)", "rev_cagr": "Umsatz-CAGR 5J",
+          "eps_cagr": "EPS-CAGR 5J", "rev_eps_90d": "EPS-Revision 90 Tage", "rev_breadth": "Revisions-Saldo 30 Tage"}
 MIN_SECTOR_N = 10
 MIN_COVERAGE = 0.6
 
@@ -98,13 +110,15 @@ def _pct(series: pd.Series, groups: pd.Series, higher_better: bool) -> pd.Series
     return out
 
 
+CORE = [m for p in SCORE_PILLARS for m, _ in PILLARS[p]["metrics"] if m not in OPTIONAL]
+
+
 def _applicable(row) -> int:
-    n = sum(len(PILLARS[p]["metrics"]) for p in SCORE_PILLARS)
     na = set(row.get("not_applicable") or [])
     own = {"pb_fin"} if (row.get("is_financial") or row.get("is_reit")) else set()
     own |= {"roa_fin"} if row.get("is_financial") else set()
-    excluded = ({"pb_fin", "roa_fin"} - own) | {m for p in SCORE_PILLARS for m, _ in PILLARS[p]["metrics"] if m in na}
-    return max(n - len(excluded), 1)
+    excluded = ({"pb_fin", "roa_fin"} - own) | na
+    return max(len([m for m in CORE if m not in excluded]), 1)
 
 
 def data_quality(row) -> tuple[str, list[str]]:
@@ -150,17 +164,17 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
     pct: dict[str, pd.Series] = {}
     for p in PILLARS.values():
         for m, hb in p["metrics"]:
-            if m in df:
-                pct[m] = _pct(pd.to_numeric(df[m], errors="coerce"), groups, hb)
+            col = pd.to_numeric(df[m], errors="coerce") if m in df else pd.Series(float("nan"), index=df.index)
+            pct[m] = _pct(col, groups, hb)
     for m in ("pe_ttm", "pe_fwd"):
         pct[m] = pct[m].where(~(df["_loss"] & pct[m].isna()), 0.0)
 
     res = pd.DataFrame(index=df.index)
     n_avail = pd.Series(0, index=df.index)
     for name, p in PILLARS.items():
-        mat = pd.concat([pct[m] for m, _ in p["metrics"]], axis=1)
+        mat = pd.concat([pct[m].rename(m) for m, _ in p["metrics"]], axis=1)
         if p["in_score"]:
-            n_avail += mat.notna().sum(axis=1)
+            n_avail += mat[[c for c in mat.columns if c not in OPTIONAL]].notna().sum(axis=1)
         res[f"p_{name}"] = (mat.mean(axis=1, skipna=True) * 10).round(1)
 
     # --- Zusatzprüfungen (Abschnitt 13: Value Trap, zyklisch überhöhter Gewinn) ---
@@ -170,7 +184,10 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
         if is_cyclical(r.get("sector"), r.get("industry")):
             pe, med = r.get("pe_ttm"), sector_pe.get(r.get("sector"))
             eg = r.get("earn_growth")
-            if (eg is not None and eg == eg and eg > 0.4) or (pe == pe and pe and med == med and med and pe < 0.6 * med):
+            om, om5 = r.get("op_margin"), r.get("op_margin_avg5")
+            margin_peak = om == om and om5 == om5 and om is not None and om5 is not None and om5 > 0 and om > 1.5 * om5
+            if ((eg is not None and eg == eg and eg > 0.4) or (pe == pe and pe and med == med and med and pe < 0.6 * med)
+                    or margin_peak):
                 extra_flags[s].append("zyklik_spitzengewinn")
                 # Normalisierter Gewinn unbekannt -> Bewertung höchstens neutral
                 pb = res.at[s, "p_Bewertung"]

@@ -78,3 +78,37 @@ def model_targets(m: dict, sector_median_pe: float | None) -> dict | None:
     out["margin_of_safety"] = round((fv - price) / fv, 3)   # (fairer Wert - Kurs) / fairer Wert
     out["potential"] = round(fv / price - 1, 3)             # fairer Wert / Kurs - 1
     return out
+
+
+# --- Reverse-DCF: Welches FCF-Wachstum ist im heutigen Unternehmenswert eingepreist? ---
+DCF_RATE = 0.09       # Kapitalkosten-Annahme [SCHÄTZUNG], einheitlich für Vergleichbarkeit
+DCF_TERMINAL = 0.025  # langfristiges Wachstum nach Jahr 10 [SCHÄTZUNG]
+DCF_YEARS = 10
+
+
+def _dcf_value(fcf: float, g: float, r: float = DCF_RATE, gt: float = DCF_TERMINAL, n: int = DCF_YEARS) -> float:
+    v, cf = 0.0, fcf
+    for t in range(1, n + 1):
+        cf *= 1 + g
+        v += cf / (1 + r) ** t
+    return v + cf * (1 + gt) / (r - gt) / (1 + r) ** n
+
+
+def implied_growth(fcf: float | None, ev: float | None) -> float | None:
+    """Jährliches FCF-Wachstum (Jahre 1-10), das den heutigen Unternehmenswert (EV) rechtfertigt.
+    Nur für positiven FCF und positiven EV; Ergebnis per Bisektion, Bereich -30 % … +60 %."""
+    fcf, ev = _v(fcf), _v(ev)
+    if not fcf or fcf <= 0 or not ev or ev <= 0:
+        return None
+    lo, hi = -0.30, 0.60
+    if _dcf_value(fcf, hi) < ev:
+        return None  # selbst 60 % p.a. reichen nicht -> nicht sinnvoll interpretierbar
+    if _dcf_value(fcf, lo) > ev:
+        return lo
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if _dcf_value(fcf, mid) > ev:
+            hi = mid
+        else:
+            lo = mid
+    return round((lo + hi) / 2, 4)
