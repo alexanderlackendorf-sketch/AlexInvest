@@ -63,7 +63,10 @@
   </section>
 
   <section id="view-watch" class="view" hidden>
-    <p class="muted small">Watchlist wird lokal in diesem Browser gespeichert (★ in der Tabelle setzen).</p>
+    <div class="filters" style="border-radius:8px;border-bottom:1px solid var(--line);margin-bottom:10px">
+      <span class="small muted" id="watchInfo"></span>
+      <button class="btn" id="watchExport" style="margin-left:auto">Für den Wochen-Digest übernehmen</button>
+    </div>
     <div class="table-wrap"><table id="tblWatch"><thead></thead><tbody></tbody></table></div>
   </section>
 

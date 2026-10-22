@@ -18,7 +18,9 @@ const FLAG_TEXT = {
   kurs_vs_schluss_abweichung: "Live-Kurs weicht >25 % vom letzten Schlusskurs ab",
   sec_abweichung: "Nettogewinn oder EPS bei Yahoo weichen >5 % vom SEC-10-K ab",
   kurs_veraltet: "Kein aktueller Referenzkurs (letzter Kurs älter als 5 Tage) – keine kursbezogenen Aussagen",
-  zyklik_spitzengewinn: "Zyklische Branche mit möglichem Spitzengewinn – niedriges KGV kann täuschen; normalisierte Gewinne nötig",
+  zyklik_spitzengewinn: "Zyklische Branche mit möglichem Spitzengewinn – niedriges KGV kann täuschen; ohne Mehrjahresdaten keine Normalisierung möglich",
+  zyklik_normalisiert: "Zyklische Branche mit möglichem Spitzengewinn – Bewertung daher über den normalisierten Gewinn (aktueller Umsatz × Median-Nettomarge 5 J.) statt über das aktuelle KGV",
+  zahlen_in_kuerze: "Quartalszahlen in den nächsten 7 Tagen – Einstieg erst danach prüfen (Kurslücken-Risiko)",
   value_trap_risiko: "Value-Trap-Risiko: billig bewertet, aber Umsatz rückläufig und Kurs im Abwärtstrend",
 };
 const AMPEL = { gruen: "🟢", gelb: "🟡", rot: "🔴", grau: "⚪" };
@@ -36,7 +38,7 @@ const TAG = {
   net_debt_ebitda: "BERECHNET", rev_growth: "IST", earn_growth: "IST", eps_growth_fwd: "BERECHNET aus SCHÄTZUNG",
   eps: "IST / SCHÄTZUNG", div_yield: "BERECHNET", payout: "IST", beta: "IST", vol_1y: "BERECHNET",
   roic_med5: "BERECHNET", op_margin_std: "BERECHNET", cash_conversion: "BERECHNET", share_cagr: "BERECHNET",
-  rev_cagr: "BERECHNET", eps_cagr: "BERECHNET", pe_vs_hist: "BERECHNET", implied_growth: "BERECHNET aus SCHÄTZUNG",
+  rev_cagr: "BERECHNET", eps_cagr: "BERECHNET", pe_vs_hist: "BERECHNET", pe_norm: "BERECHNET", implied_growth: "BERECHNET aus SCHÄTZUNG",
   rev_eps_90d: "BERECHNET aus SCHÄTZUNG", rev_breadth: "BERECHNET aus SCHÄTZUNG", sbc_rev: "BERECHNET",
 };
 const ampelOf = (v) => !isNum(v) ? "grau" : v >= 6.5 ? "gruen" : v < 3.5 ? "rot" : "gelb";
@@ -88,6 +90,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* privat */ } },
 };
 let WATCH = new Set(store.get("ax-watch", []));
+let REPO_WATCH = new Set();
 const $ = (s) => document.querySelector(s);
 
 /* ---------- Spalten ---------- */
@@ -142,7 +145,8 @@ const PRESETS = [
   { id: "compounder", label: "Compounder (ROIC, Wachstum, keine Verwässerung)", f: (r) => r.roic_med5 >= 0.15 && r.rev_cagr >= 0.08 && (r.share_cagr == null || r.share_cagr <= 0.005) && r.op_margin_std != null && r.op_margin_std < 0.05 },
   { id: "revs", label: "Positive Revisionen + Qualität", f: (r) => r.rev_eps_90d >= 0.03 && r.rev_breadth > 0 && r.ampeln?.["Qualität"] === "gruen" },
   { id: "hist", label: "Unter eigener Bewertungshistorie", f: (r) => r.pe_vs_hist <= -0.2 && r.ampeln?.["Qualität"] !== "rot" && !(r.flags || []).includes("zyklik_spitzengewinn") },
-  { id: "warn", label: "Zykliker-/Value-Trap-Warnung", f: (r) => (r.flags || []).some((f) => f === "zyklik_spitzengewinn" || f === "value_trap_risiko") },
+  { id: "warn", label: "Zykliker-/Value-Trap-Warnung", f: (r) => (r.flags || []).some((f) => f === "zyklik_spitzengewinn" || f === "zyklik_normalisiert" || f === "value_trap_risiko") },
+  { id: "soon", label: "Zahlen in ≤ 7 Tagen", f: (r) => (r.flags || []).includes("zahlen_in_kuerze") },
   { id: "risers", label: "Score-Aufsteiger", f: (r) => r.score_chg_1w >= 0.8 },
 ];
 
@@ -161,6 +165,8 @@ async function load() {
     return;
   }
   ROWS = DATA.rows;
+  REPO_WATCH = new Set(DATA.meta.watchlist || []);
+  REPO_WATCH.forEach((s) => WATCH.add(s));
   health();
   kpis();
   fillSelects();
@@ -308,7 +314,18 @@ function render() {
   tbl.querySelector("tbody").innerHTML = rows.slice(0, 800).map(rowHtml).join("");
   $("#count").textContent = `${rows.length} Treffer`;
 }
+function exportWatch() {
+  const repo = DATA.meta.repo || "alexanderlackendorf-sketch/AlexInvest";
+  const json = JSON.stringify({ _comment: "Watchlist für den Wochen-Digest und für alle Geräte.", symbols: [...WATCH].sort() }, null, 2);
+  const url = `https://github.com/${repo}/edit/main/screener/config/watchlist.json`;
+  const go = () => { toast("Watchlist kopiert. Auf GitHub den Inhalt ersetzen und „Commit changes“ klicken."); window.open(url, "_blank", "noopener"); };
+  navigator.clipboard ? navigator.clipboard.writeText(json).then(go, () => { prompt("Inhalt kopieren:", json); window.open(url, "_blank", "noopener"); }) : prompt("Inhalt kopieren:", json);
+}
+
 function renderWatch() {
+  const local = [...WATCH].filter((s) => !REPO_WATCH.has(s)).length;
+  $("#watchInfo").textContent = `${REPO_WATCH.size} Werte aus dem Repo (auf allen Geräten, im Wochen-Digest) · ${local} nur in diesem Browser`;
+  $("#watchExport").onclick = exportWatch;
   const tbl = $("#tblWatch"); head(tbl);
   const rows = sortRows(ROWS.filter((r) => WATCH.has(r.symbol)));
   tbl.querySelector("tbody").innerHTML = rows.length ? rows.map(rowHtml).join("")
@@ -411,8 +428,15 @@ function method() {
     <ul class="small">
       <li>Banken/Versicherer: EV/EBITDA, FCF und Bruttomarge [NICHT ANWENDBAR]. Stattdessen KBV und Gesamtkapitalrendite.</li>
       <li>REITs: KGV und Gewinnwachstum [NICHT ANWENDBAR] (FFO/AFFO nötig, nicht frei verfügbar). Kein KGV-Kursziel.</li>
-      <li>Zykliker (Energie, Rohstoffe, Halbleiter, Auto, Chemie …): Bei Gewinnsprung &gt; 40 %, KGV &lt; 60 % des Sektormedians oder operativer Marge &gt; 150 % des eigenen 5-Jahres-Schnitts gilt die Warnung „möglicher Spitzengewinn“. Die Bewertung zählt dann höchstens neutral, und es gibt kein Modell-Kursziel.</li>
+      <li>Zykliker (Energie, Rohstoffe, Halbleiter, Auto, Chemie …): Energie und Rohstoffe gelten immer als zyklisch. Bei übrigen zyklischen Branchen (Halbleiter, Auto, Chemie …) hebt erst eine Historie von mindestens 5 Jahren ohne Umsatzeinbruch ≥ 15 % die Zykliker-Vermutung auf. Dann gilt ein Margenanstieg als strukturell. Bei Gewinnsprung &gt; 40 %, KGV &lt; 60 % des Sektormedians oder operativer Marge &gt; 150 % des eigenen 5-Jahres-Schnitts gilt dann „möglicher Spitzengewinn“. Mit Mehrjahresdaten wird dann über den <b>normalisierten Gewinn</b> bewertet (aktueller Umsatz × Median-Nettomarge 5 J.; so bleibt echtes Wachstum erhalten). KGV, EV/EBITDA, FCF-Rendite und Reverse-DCF zählen dann nicht, weil sie auf Spitzengewinnen beruhen. Kursziel = normalisiertes EPS × eigenes Median-KGV 5 J. Ohne Mehrjahresdaten zählt die Bewertung höchstens neutral, und es gibt kein Kursziel.</li>
+      <li>Vergleich: zuerst innerhalb der Branchengruppe (z.B. Halbleiter, Software, Banken; mind. 8 Werte), sonst im Sektor (mind. 10), sonst im ganzen Universum.</li>
       <li>Value-Trap-Risiko: Bewertung 🟢, aber Umsatz rückläufig und Kurs mehr als 20 % im Minus (12-1M).</li>
+    </ul>
+    <h4>Stabilität &amp; Termine</h4>
+    <ul class="small">
+      <li>Hysterese: Kandidat wird eine Aktie ab Score 8,0, sie bleibt es bis unter 7,5. „Beobachten“ gilt ab 5,5, gehalten bis unter 5,0. Das verhindert tägliches Hin- und Herspringen.</li>
+      <li>Quartalszahlen in den nächsten 7 Tagen: Die Einstiegs-Ampel ist höchstens 🟡, das Urteil bekommt einen Hinweis.</li>
+      <li>Wochen-Digest: jeden Freitag nach dem Datenlauf als Kommentar im GitHub-Issue „📬 Screener-Digest“. GitHub verschickt die E-Mail. Die Watchlist dafür steht in <code>screener/config/watchlist.json</code>.</li>
     </ul>
     <h4>Mehrjahres-Daten</h4>
     <ul class="small">
@@ -486,6 +510,7 @@ function openDetail(sym) {
     M("Aktienvergütung / Umsatz", "sbc_rev", pctPlain(r.sbc_rev), null),
     M("Umsatz-CAGR 5J", "rev_cagr", pct(r.rev_cagr)), M("EPS-CAGR 5J", "eps_cagr", pct(r.eps_cagr)),
     M("Verlustjahre (5J)", "loss_years5", isNum(r.loss_years5) && r.hist_years >= 3 ? String(r.loss_years5) : dash, null, r.hist_years >= 3 ? r.loss_years5 : null),
+    M("KGV normalisiert (Umsatz × Median-Marge 5J)", "pe_norm", fmt(r.pe_norm)),
     M("KGV vs. eigener 5J-Median", "pe_vs_hist", isNum(r.pe_vs_hist) ? `${pct(r.pe_vs_hist, 0)} <span class="muted">(Median ${fmt(r.pe_hist_med5)})</span>` : dash),
   ];
   // Reverse-DCF: eingepreistes FCF-Wachstum gegen tatsächliches 5J-Umsatzwachstum
@@ -573,8 +598,8 @@ function openDetail(sym) {
       <div class="panel">
         <h3>Getrennte Beurteilung</h3>
         <table class="metrics">${ampelDetail}</table>
-        ${flags.filter((f) => f === "zyklik_spitzengewinn" || f === "value_trap_risiko").map((f) => `<div class="flag-list" style="margin-top:6px">⚠ ${esc(flagText(f))}</div>`).join("")}
-        <div class="note">Säule = mittleres Perzentil der Kennzahlen im Sektor (0–10). 🟢 ≥ 6,5 · 🟡 3,5–6,5 · 🔴 &lt; 3,5. Grüne Ampeln werden nicht addiert, eine rote überstimmt sie.</div>
+        ${flags.filter((f) => ["zyklik_spitzengewinn", "zyklik_normalisiert", "value_trap_risiko", "zahlen_in_kuerze"].includes(f)).map((f) => `<div class="flag-list" style="margin-top:6px">⚠ ${esc(flagText(f))}</div>`).join("")}
+        <div class="note">Vergleichsgruppe: <b>${esc(r.peer_group || r.sector || "Universum")}</b> (bei zu wenigen Werten Sektor bzw. Universum). Säule = mittleres Perzentil der Kennzahlen (0–10). 🟢 ≥ 6,5 · 🟡 3,5–6,5 · 🔴 &lt; 3,5. Grüne Ampeln werden nicht addiert, eine rote überstimmt sie.</div>
         <h3 style="margin-top:16px">Buy-Zonen <span class="muted" style="text-transform:none;letter-spacing:0">· [BERECHNET] aus Kursreihe</span></h3>
         ${r.in_buy_zone && !stale ? '<div class="ok-line">● Kurs liegt aktuell in Buy-Zone 1</div>' : ""}
         ${zones}
@@ -606,7 +631,7 @@ function openDetail(sym) {
           <table class="metrics"><tr><td>1 Jahr</td><td class="n">${money(t.y1, r.currency)}</td><td class="n">${pct(t.y1_upside)}</td></tr>
             <tr><td>2 Jahre</td><td class="n">${money(t.y2, r.currency)}</td><td class="n">${pct(t.y2_upside)}</td></tr>
             <tr><td>3 Jahre</td><td class="n">${money(t.y3, r.currency)}</td><td class="n">${pct(t.y3_upside)}</td></tr></table>
-          <div class="note">Faires KGV ${fmt(t.fair_pe)} (eigenes und Sektor-KGV, max. ±25 %). Basis: Konsens-EPS des nächsten Geschäftsjahres [SCHÄTZUNG]. Kein DCF. Die Einzelanalyse ersetzt es nicht. Ein Bear-Szenario ist keine Verlustuntergrenze.</div>`
+          <div class="note">Basis: ${esc(t.basis || "Konsens-EPS nächstes GJ")} · faires KGV ${fmt(t.fair_pe)} [SCHÄTZUNG]. Kein DCF. Die Einzelanalyse ersetzt es nicht. Ein Bear-Szenario ist keine Verlustuntergrenze.</div>`
         : `<div class="note">${noModel}</div>`}
         <h4>Eingepreiste Erwartung (Reverse-DCF) [BERECHNET aus SCHÄTZUNG]</h4>
         ${isNum(ig) ? `<dl class="kv"><dt>Eingepreistes FCF-Wachstum</dt><dd>${pct(ig)} p.a. über 10 Jahre</dd>

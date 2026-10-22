@@ -265,6 +265,19 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
     if out["cash_conversion"] is not None and not -3 < out["cash_conversion"] < 5:
         out["cash_conversion"] = None
     out["sbc_rev"] = st.mean(sbc_r) if len(sbc_r) >= 2 else None
+    # Nachgewiesene Zyklik: stärkster Umsatzrückgang gegenüber Vorjahr in der verfügbaren Historie (bis 10 J.)
+    revs = [g(y, "revenue") for y in ys]
+    chg = [b / a - 1 for a, b in zip(revs, revs[1:]) if a and b and a > 0]
+    out["max_rev_drop"] = min(chg) if chg else None
+    # Normalisierter Gewinn je Aktie (für Zykliker): aktueller Umsatz × Median-Nettomarge 5 J. / Aktienzahl.
+    # Normalisiert wird die Marge, nicht das Gewinnniveau – sonst würde echtes Wachstum bestraft.
+    nm = [g(y, "net_income") / g(y, "revenue") for y in last5
+          if g(y, "net_income") is not None and g(y, "revenue") and g(y, "revenue") > 0]
+    rev_l, sh_l = g(last5[-1], "revenue"), g(last5[-1], "shares")
+    # Median statt Mittelwert: einzelne Abschreibungsjahre sollen die "normale" Marge nicht dominieren
+    out["net_margin_avg5"] = st.median(nm) if len(nm) >= 3 else None
+    out["eps_norm5"] = (rev_l * out["net_margin_avg5"] / sh_l
+                        if out["net_margin_avg5"] and out["net_margin_avg5"] > 0 and rev_l and sh_l else None)
     out["loss_years5"] = sum(1 for y in last5 if (g(y, "net_income") or 0) < 0)
 
     # Historisches KGV: Kurs am Geschäftsjahresende / verwässertes EPS dieses Jahres

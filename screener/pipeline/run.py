@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import logging
 import math
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import fetch, history, metrics, scoring, sec, technicals, targets, tracking, universe
+from . import digest, fetch, history, metrics, scoring, sec, technicals, targets, tracking, universe
 
 log = logging.getLogger("screener")
 MAX_INFO_AGE_DAYS = 10
@@ -179,6 +180,15 @@ def main(argv=None):
         else:
             years, source, same_cur = [], None, False
         h = history.derive(years, px_adj[s]["Close"], same_currency=same_cur)
+        # Normalisiertes KGV: Kurs (in Berichtswährung der Historie) / Ø-EPS 5 J.
+        hist_cur = "USD" if source == "SEC 10-K" else r.get("financial_currency")
+        cur = r.get("currency")
+        if h.get("eps_norm5") and cur in fx and hist_cur in fx:
+            price_h = r["price"] * fx[cur] / fx[hist_cur]
+            r["pe_norm"] = price_h / h["eps_norm5"] if 0 < price_h / h["eps_norm5"] < 300 else None
+            r["eps_norm_trading"] = h["eps_norm5"] * fx[hist_cur] / fx[cur]
+        else:
+            r["pe_norm"] = r["eps_norm_trading"] = None
         table = h.pop("hist_table", [])
         r.update(h)
         r["hist_source"] = source if h.get("hist_years", 0) >= 3 else None
@@ -192,6 +202,13 @@ def main(argv=None):
             "d": [[i.strftime("%Y-%m-%d"), x.Open, x.High, x.Low, x.Close] for i, x in px_adj[s].iloc[-CHART_DAYS:].iterrows()],
             "hist": table, "hist_source": r["hist_source"], "hist_currency": "USD" if source == "SEC 10-K" else r.get("financial_currency"),
         })
+
+    for r in rows:
+        ed = r.get("earnings_date")
+        days = (dt.date.fromisoformat(ed[:10]) - now.date()).days if ed else None
+        r["earnings_in_days"] = days if days is not None and days >= 0 else None
+        if days is not None and 0 <= days <= 7:
+            r["flags"].append("zahlen_in_kuerze")
 
     df = pd.DataFrame(rows).set_index("symbol")
     sc = scoring.score(df)
@@ -214,6 +231,7 @@ def main(argv=None):
         old = [x for x in h if x[0] <= cutoff]
         return h[-1][1] - old[-1][1] if (old and h) else None
 
+    prev_verdicts = _load(state / "verdicts.json", {})
     out_rows = []
     for s, r in df.iterrows():
         d = r.to_dict()
@@ -221,7 +239,7 @@ def main(argv=None):
         d["pillars"] = {n: d.pop(f"p_{n}") for n in scoring.PILLARS}
         if not isinstance(d.get("sec"), dict):
             d.pop("sec", None)
-        d.update(scoring.assess(d))
+        d.update(scoring.assess(d, prev_verdicts.get(s)))
         d["targets"] = targets.model_targets(d, sector_pe.get(d.get("sector")))
         d["score_chg_1w"] = change(s, 7)
         d["score_chg_1m"] = change(s, 30)
@@ -240,6 +258,8 @@ def main(argv=None):
         if st:
             sec_status[st] = sec_status.get(st, 0) + 1
 
+    _save(state / "verdicts.json", {r["symbol"]: r["verdict_code"] for r in out_rows})
+
     # --- Erfolgskontrolle (wöchentliche Kohorten, Rendite gegen Universum und Indizes) ---
     track = _load(state / "tracking.json", {})
     track = tracking.snapshot(track, now.date(), out_rows)
@@ -253,12 +273,15 @@ def main(argv=None):
         "failed": failed, "warnings": warnings, "flag_counts": flag_counts, "sec_status": sec_status,
         "fx_to_eur": fx,
         "tracking": track_eval,
+        "watchlist": digest.load_watchlist(),
+        "repo": os.environ.get("GITHUB_REPOSITORY", "alexanderlackendorf-sketch/AlexInvest"),
         "hist_sources": {src: sum(1 for r in out_rows if r.get("hist_source") == src)
                          for src in ("SEC 10-K", "Yahoo-Jahresabschlüsse")},
         "price_date_max": max((r["last_date"] for r in out_rows), default=None),
         "pillars": {n: {"weight": p["weight"], "in_score": p["in_score"],
                         "metrics": [[m, scoring.LABELS[m], hb] for m, hb in p["metrics"]]}
                     for n, p in scoring.PILLARS.items()},
+        "peer_groups": sorted({r["peer_group"] for r in out_rows if isinstance(r.get("peer_group"), str)}),
         "verdicts": {c: sum(1 for r in out_rows if r["verdict_code"] == c)
                      for c in ("kandidat", "beobachten", "beobachten_teuer", "neutral", "meiden_teuer", "meiden_schwach", "meiden", "nab")},
         "sources": {
