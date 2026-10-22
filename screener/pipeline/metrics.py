@@ -6,9 +6,14 @@ und als Flag dokumentiert. Verhältniszahlen werden selbst aus Kurs und Bilanzda
 """
 from __future__ import annotations
 
+import datetime as dt
 import math
 
 FINANCIAL_SECTORS = {"Financial Services", "Financials"}
+REIT_SECTORS = {"Real Estate"}
+# Kennzahlen, die für die Branche wirtschaftlich ungeeignet sind -> [NICHT ANWENDBAR] statt "fehlt"
+NA_FINANCIAL = ["ev_ebitda", "fcf_yield", "fcf_margin", "net_debt_ebitda", "gross_margin"]
+NA_REIT = ["pe_ttm", "pe_fwd", "peg", "eps_growth_fwd", "earn_growth"]  # Immobilien: FFO/AFFO statt Gewinn
 
 
 def _num(x):
@@ -167,6 +172,22 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
     m["analyst_rec"] = rec if (rec and n_an >= 3 and 1 <= rec <= 5) else None
     m["analyst_rec_key"] = info.get("recommendationKey") if n_an >= 3 else None
 
+    # Nicht anwendbare Kennzahlen entfernen (Banken/Versicherer: EBITDA/FCF; REITs: KGV auf Basis Gewinn)
+    na = []
+    if is_fin:
+        na += NA_FINANCIAL
+    if info.get("sector") in REIT_SECTORS:
+        na += NA_REIT
+        m["loss_making"] = False  # Bilanzgewinn ist bei REITs durch Abschreibungen verzerrt
+    for k in na:
+        m[k] = None
+    m["not_applicable"] = na
+    m["is_reit"] = info.get("sector") in REIT_SECTORS
+
+    ts = _num(info.get("regularMarketTime"))
+    m["price_time"] = (dt.datetime.fromtimestamp(ts, dt.timezone.utc).isoformat(timespec="minutes")
+                       if ts and ts > 1e9 else None)
+    m["exchange"] = info.get("fullExchangeName") or info.get("exchange")
     m["price"] = price
     m["currency"] = cur
     m["financial_currency"] = fin_cur

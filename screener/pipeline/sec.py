@@ -24,7 +24,16 @@ REVENUE_CONCEPTS = [
     "RevenueFromContractWithCustomerIncludingAssessedTax",
 ]
 TOLERANCE = 0.05
-CACHE_VERSION = 2  # bei Logikänderung erhöhen -> alte Prüfergebnisse werden neu erzeugt
+CACHE_VERSION = 3
+SPLIT_FACTORS = (2, 3, 4, 5, 8, 10, 15, 20, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 8, 1 / 10, 1 / 15, 1 / 20)
+
+
+def split_factor(sec_eps, y_eps) -> float | None:
+    """Erkennt, ob Yahoo das EPS rückwirkend split-bereinigt hat (Verhältnis = typischer Split-Faktor)."""
+    if not sec_eps or not y_eps or (sec_eps > 0) != (y_eps > 0):
+        return None
+    ratio = sec_eps / y_eps
+    return next((f for f in SPLIT_FACTORS if abs(ratio / f - 1) < 0.03), None)  # bei Logikänderung erhöhen -> alte Prüfergebnisse werden neu erzeugt
 
 
 def _get(url: str, timeout: int = 60) -> requests.Response:
@@ -115,10 +124,16 @@ def verify_company(symbol: str, cik: int) -> dict:
         "accn": anchor.get("accn"),
         "url": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-K",
     })
+    ni_dev = res["net_income"]["dev"]
+    sf = split_factor(res["eps_diluted"]["sec"], res["eps_diluted"]["yahoo"])
     if not devs:
         res["status"] = "kein_abgleich"
     elif max(devs) <= TOLERANCE:
         res["status"] = "bestaetigt"
+    elif sf and ni_dev is not None and ni_dev <= TOLERANCE:
+        # Gewinn identisch, EPS nur um Split-Faktor verschoben -> Daten konsistent
+        res["status"] = "bestaetigt_split"
+        res["split_factor"] = sf
     else:
         res["status"] = "abweichung"
     return res

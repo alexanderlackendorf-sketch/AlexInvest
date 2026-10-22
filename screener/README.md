@@ -11,8 +11,8 @@ GitHub Actions (Mo–Fr 22:17 UTC)
        fetch.py      Kurse (2 Jahre) + Fundamentaldaten von Yahoo Finance
        metrics.py    Kennzahlen selbst berechnen, gegen Yahoo prüfen, Unplausibles verwerfen
        technicals.py SMA, RSI, ATR, Unterstützungen -> Buy-Zonen
-       scoring.py    branchenrelatives Rating 1–10 (5 Säulen)
-       targets.py    Modell-Kursziele 1/2/3 Jahre
+       scoring.py    Rating 1–10, getrennte Ampeln und Urteil nach den Projekt-Regeln „Aktienanalyse“
+       targets.py    faire Wertspanne, Sicherheitsmarge, Bear/Base/Bull, Kurspfad 1/2/3 Jahre
        sec.py        US-Abschlüsse gegen SEC EDGAR 10-K prüfen (rollierend)
   └─ Datenstand  -> Branch `screener-data` (ein einziger Commit, wird überschrieben)
   └─ Website     -> GitHub Pages (screener/web + Daten)

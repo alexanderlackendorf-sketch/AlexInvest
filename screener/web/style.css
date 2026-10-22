@@ -171,7 +171,12 @@ tbody tr:hover td.sticky { background: var(--surface-2); }
 .score.big { font-size: 26px; height: 46px; min-width: 70px; border-radius: 8px; }
 .delta { font: 11px var(--mono); margin-left: 6px; }
 .verdict { font-size: 12px; color: var(--text-secondary); }
-.verdict.top { color: var(--accent-ink); font-weight: 600; }
+.verdict.v-kandidat { color: var(--accent-ink); font-weight: 600; }
+.verdict.v-beobachten, .verdict.v-beobachten_teuer { color: var(--text-primary); }
+.verdict.v-nab, .verdict.v-neutral { color: var(--text-muted); }
+.verdict.v-nab { font-style: italic; }
+.amp { letter-spacing: 1px; font-size: 12px; cursor: help; }
+.ktag { font: 10px var(--mono); color: var(--text-muted); white-space: nowrap; }
 
 /* Panels */
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -213,6 +218,7 @@ table.mini tr { cursor: pointer; }
 .metrics { width: 100%; }
 .metrics td { padding: 4px 6px; font-size: 12px; }
 .metrics td:first-child { text-align: left; color: var(--text-secondary); }
+.metrics td.l.small { white-space: normal; min-width: 140px; }
 .pct { display: inline-block; width: 60px; height: 6px; background: var(--surface-2); border-radius: 3px; vertical-align: middle; position: relative; }
 .pct > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
 .zone-card { border: 1px dashed color-mix(in srgb, var(--good) 60%, transparent); background: var(--zone); border-radius: 6px; padding: 8px 10px; margin: 6px 0; font-size: 12px; }
