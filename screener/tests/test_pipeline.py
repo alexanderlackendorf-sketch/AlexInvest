@@ -95,6 +95,15 @@ class MetricsTest(unittest.TestCase):
         self.assertAlmostEqual(m["pe_ttm"], 25 * 1.15 / 0.9 / 2.5, places=4)
         self.assertIn("waehrung_umgerechnet", flags)
 
+    def test_yahoo_unconverted_mixed_currency(self):
+        # Shell-Fall: Yahoo teilt GBP-Kurs durch USD-EPS ohne Umrechnung -> trotzdem bestätigt, eigener Wert gilt
+        info = {"currency": "GBp", "financialCurrency": "USD", "currentPrice": 3966, "trailingEps": 3.38,
+                "trailingPE": 11.7337, "sharesOutstanding": 5.688e9}
+        fx = {"EUR": 1, "USD": 0.8928, "GBP": 1.1937, "GBp": 0.011937}
+        m, flags = metrics.derive(info, 3966, fx)
+        self.assertAlmostEqual(m["pe_ttm"], 39.66 * 1.1937 / 0.8928 / 3.38, places=3)
+        self.assertNotIn("kgv_inkonsistent", flags)
+
     def test_missing_stays_missing(self):
         m, _ = metrics.derive({"currency": "EUR", "currentPrice": 10}, 10, {"EUR": 1})
         for k in ("pe_ttm", "pe_fwd", "ev_ebitda", "roe", "analyst_upside", "div_yield"):

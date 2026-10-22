@@ -67,6 +67,10 @@ def fetch_prices(symbols: list[str], period: str = "2y", chunk: int = 80, min_ro
             if len(sub) >= min_rows:
                 out[s] = sub[["Open", "High", "Low", "Close", "Volume"]].copy()
         time.sleep(1)
+    # Einzelne Aussetzer im Sammelabruf: fehlende Symbole einmal einzeln nachladen
+    missing = [s for s in symbols if s not in out]
+    if missing and len(missing) <= 50 and chunk > 1:
+        out.update(fetch_prices(missing, period=period, chunk=1, min_rows=min_rows))
     return out
 
 

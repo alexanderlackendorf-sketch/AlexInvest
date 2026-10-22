@@ -26,9 +26,17 @@ REVENUE_CONCEPTS = [
 TOLERANCE = 0.05
 
 
+def _get(url: str, timeout: int = 60) -> requests.Response:
+    r = requests.get(url, headers=UA, timeout=timeout)
+    if r.status_code != 200:
+        # Antworttext hilft bei der Diagnose (z.B. "Undeclared Automated Tool" vs. IP-Sperre)
+        snippet = " ".join(r.text.split())[:160]
+        raise requests.HTTPError(f"HTTP {r.status_code} {url.split('/')[2]}: {snippet}")
+    return r
+
+
 def ticker_cik_map() -> dict[str, int]:
-    r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=UA, timeout=30)
-    r.raise_for_status()
+    r = _get("https://www.sec.gov/files/company_tickers.json", timeout=30)
     return {v["ticker"].upper().replace(".", "-"): int(v["cik_str"]) for v in r.json().values()}
 
 
@@ -50,9 +58,7 @@ def latest_annual(facts: dict, concepts: list[str], unit: str) -> dict | None:
 
 
 def company_facts(cik: int) -> dict:
-    r = requests.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json", headers=UA, timeout=60)
-    r.raise_for_status()
-    return r.json()
+    return _get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json()
 
 
 def _yahoo_value(stmt, rows: list[str], end: str):
@@ -145,5 +151,7 @@ def refresh(universe: list[dict], cache: dict, max_checks: int = 120) -> tuple[d
             errors.append(f"{u['symbol']}: {e}")
         time.sleep(0.25)
     if errors:
-        errors = [f"SEC-Abgleich: {len(errors)} Fehler, z.B. {errors[0]}"]
+        ua_set = "gesetzt" if os.environ.get("SEC_USER_AGENT") else "NICHT gesetzt"
+        errors = [f"SEC-Abgleich: {len(errors)} Fehler (Secret SEC_USER_AGENT {ua_set}), z.B. {errors[0]}"
+                  + (f" | {errors[1]}" if len(errors) > 1 else "")]
     return cache, errors

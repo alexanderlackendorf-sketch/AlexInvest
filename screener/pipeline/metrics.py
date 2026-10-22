@@ -71,11 +71,19 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
     eps_ttm = _num(info.get("trailingEps"))
     eps_fwd = _num(info.get("forwardEps"))
 
-    def checked_ratio(name, ours, yahoo_key, tol=0.15):
+    mixed = fx is not None and fx != 1.0
+
+    def checked_ratio(name, ours, yahoo_key, tol=0.15, raw=None):
+        """Abgleich mit Yahoos Kennzahl. Bei Währungsmix rechnet Yahoo OHNE Umrechnung
+        (z.B. Kurs in GBP / EPS in USD). Dann wird gegen die unumgerechnete Variante `raw`
+        geprüft: Stimmt sie, sind die Rohdaten bestätigt und unser umgerechneter Wert gilt."""
         y = _num(info.get(yahoo_key)) if yahoo_key else None
         if ours is None:
             return None
-        if y is not None and y > 0 and ours > 0 and _rel_dev(ours, y) > tol:
+        cmp = raw if mixed else ours
+        if mixed and raw is None:
+            return ours
+        if y is not None and y > 0 and cmp and cmp > 0 and _rel_dev(cmp, y) > tol:
             # Unsere Berechnung und Yahoo widersprechen sich -> nicht verwenden
             flags.append(f"{name}_inkonsistent")
             return None
@@ -83,8 +91,8 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
 
     pe_ttm = _div(price_fin, eps_ttm) if eps_ttm and eps_ttm > 0 else None
     pe_fwd = _div(price_fin, eps_fwd) if eps_fwd and eps_fwd > 0 else None
-    m["pe_ttm"] = checked_ratio("kgv", pe_ttm, "trailingPE")
-    m["pe_fwd"] = checked_ratio("kgv_fwd", pe_fwd, "forwardPE", tol=0.25)
+    m["pe_ttm"] = checked_ratio("kgv", pe_ttm, "trailingPE", raw=_div(price, eps_ttm))
+    m["pe_fwd"] = checked_ratio("kgv_fwd", pe_fwd, "forwardPE", tol=0.25, raw=_div(price, eps_fwd))
     if m["pe_ttm"] and m["pe_ttm"] > 1000:
         m["pe_ttm"] = None
     if m["pe_fwd"] and m["pe_fwd"] > 1000:
@@ -100,7 +108,8 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
                 if m["pe_fwd"] and m["eps_growth_fwd"] and m["eps_growth_fwd"] > 0.01 else None)
 
     bvps = _num(info.get("bookValue"))
-    m["pb"] = checked_ratio("kbv", _div(price_fin, bvps) if bvps and bvps > 0 else None, "priceToBook", tol=0.25)
+    m["pb"] = checked_ratio("kbv", _div(price_fin, bvps) if bvps and bvps > 0 else None, "priceToBook", tol=0.25,
+                            raw=_div(price, bvps))
 
     revenue = _num(info.get("totalRevenue"))
     ebitda = _num(info.get("ebitda"))
@@ -113,7 +122,9 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
     ev = mcap_fin + (debt or 0) - (cash or 0) if mcap_fin and debt is not None and cash is not None else None
     m["ev_ebitda"] = None
     if not is_fin and ev and ebitda and ebitda > 0:
-        m["ev_ebitda"] = checked_ratio("ev_ebitda", ev / ebitda, "enterpriseToEbitda", tol=0.25)
+        ev_raw = mcap + debt - cash if mcap else None
+        m["ev_ebitda"] = checked_ratio("ev_ebitda", ev / ebitda, "enterpriseToEbitda", tol=0.25,
+                                       raw=_div(ev_raw, ebitda))
         if m["ev_ebitda"] and m["ev_ebitda"] > 200:
             m["ev_ebitda"] = None
     m["fcf_yield"] = _div(fcf, mcap_fin) if not is_fin else None
