@@ -23,6 +23,7 @@
     <button class="tab active" data-view="screener" role="tab">Screener</button>
     <button class="tab" data-view="movers" role="tab">Score-Movers</button>
     <button class="tab" data-view="watch" role="tab">Watchlist</button>
+    <button class="tab" data-view="track" role="tab">Erfolgskontrolle</button>
     <button class="tab" data-view="method" role="tab">Methodik &amp; Daten</button>
   </nav>
   <div class="status">
@@ -64,6 +65,10 @@
   <section id="view-watch" class="view" hidden>
     <p class="muted small">Watchlist wird lokal in diesem Browser gespeichert (★ in der Tabelle setzen).</p>
     <div class="table-wrap"><table id="tblWatch"><thead></thead><tbody></tbody></table></div>
+  </section>
+
+  <section id="view-track" class="view" hidden>
+    <div class="panel" id="track-panel"></div>
   </section>
 
   <section id="view-method" class="view" hidden>

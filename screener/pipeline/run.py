@@ -17,12 +17,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import fetch, metrics, scoring, sec, technicals, targets, universe
+from . import fetch, history, metrics, scoring, sec, technicals, targets, tracking, universe
 
 log = logging.getLogger("screener")
 MAX_INFO_AGE_DAYS = 10
 MAX_PRICE_AGE_DAYS = 5  # älter -> kein aktueller Referenzkurs, keine kursbezogenen Aussagen
 HISTORY_KEEP = 400
+CHART_DAYS = 520  # Kursreihe für den Chart (~2 Jahre); intern werden 5 Jahre geladen
 # GICS-Namen (Wikipedia) auf Yahoo-Sektornamen abbilden, falls Yahoo keinen Sektor liefert
 GICS_TO_YAHOO = {
     "Information Technology": "Technology", "Health Care": "Healthcare", "Financials": "Financial Services",
@@ -68,6 +69,7 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=0, help="nur die ersten N Aktien (Test)")
     ap.add_argument("--skip-sec", action="store_true")
     ap.add_argument("--sec-max", type=int, default=600)
+    ap.add_argument("--hist-max", type=int, default=200)
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -85,7 +87,8 @@ def main(argv=None):
     log.info("Universum: %d Aktien", len(symbols))
 
     # --- Kurse ---
-    prices = fetch.fetch_prices(symbols)
+    # 5 Jahre: für historisches KGV und Erfolgskontrolle; dazu Vergleichsindizes
+    prices = fetch.fetch_prices(symbols + list(tracking.BENCHMARKS), period="5y")
     log.info("Kurse erhalten: %d/%d", len(prices), len(symbols))
 
     # --- Fundamentaldaten (mit Cache als Rückfallebene, max. 10 Tage alt) ---
@@ -112,7 +115,7 @@ def main(argv=None):
         warnings.append(f"Devisenkurse fehlen für {', '.join(missing_fx)} – betroffene Kennzahlen werden nicht berechnet")
 
     # --- Kennzahlen + Technik ---
-    rows, failed = [], []
+    rows, failed, px_adj = [], [], {}
     meta_by_sym = {u["symbol"]: u for u in uni}
     for s in symbols:
         if s not in infos or s not in prices:
@@ -146,10 +149,7 @@ def main(argv=None):
             "fund_date": info_date,
             **m, **t, "flags": flags,
         })
-        _save(public / "px" / f"{safe_name(s)}.json", {
-            "symbol": s, "currency": m["currency"],
-            "d": [[i.strftime("%Y-%m-%d"), r.Open, r.High, r.Low, r.Close] for i, r in px.iterrows()],
-        })
+        px_adj[s] = px
 
     # --- SEC-Abgleich (US) – vor dem Scoring, weil er die Datenqualität bestimmt ---
     sec_cache = _load(state / "sec_cache.json", {})
@@ -159,9 +159,39 @@ def main(argv=None):
         _save(state / "sec_cache.json", sec_cache)
     for r in rows:
         if r["symbol"] in sec_cache:
-            r["sec"] = sec_cache[r["symbol"]]
+            r["sec"] = {k: v for k, v in sec_cache[r["symbol"]].items() if k != "history"}
             if r["sec"].get("status") == "abweichung":
                 r["flags"].append("sec_abweichung")
+
+    # --- Mehrjahres-Historie: SEC (US, bis 10 J.) oder Yahoo-Jahresabschlüsse (übrige) ---
+    hist_cache = _load(state / "hist_cache.json", {})
+    if not args.skip_sec:
+        hist_cache = history.refresh_yahoo(uni, hist_cache, max_checks=args.hist_max)
+        _save(state / "hist_cache.json", hist_cache)
+    for r in rows:
+        s = r["symbol"]
+        sc_ = sec_cache.get(s) or {}
+        if sc_.get("history") and sc_.get("status") != "abweichung":
+            years, source, same_cur = sc_["history"], "SEC 10-K", r.get("currency") == "USD"
+        elif s in hist_cache:
+            years, source = hist_cache[s].get("years", []), hist_cache[s].get("source", "Yahoo")
+            same_cur = r.get("currency") == r.get("financial_currency")
+        else:
+            years, source, same_cur = [], None, False
+        h = history.derive(years, px_adj[s]["Close"], same_currency=same_cur)
+        table = h.pop("hist_table", [])
+        r.update(h)
+        r["hist_source"] = source if h.get("hist_years", 0) >= 3 else None
+        pe, peh = r.get("pe_ttm"), h.get("pe_hist_med5")
+        r["pe_vs_hist"] = pe / peh - 1 if (pe and peh) else None
+        r["implied_growth"] = targets.implied_growth(r.get("fcf_fin"), r.get("ev_fin"))
+        for k in r.get("not_applicable") or []:
+            r[k] = None
+        _save(public / "px" / f"{safe_name(s)}.json", {
+            "symbol": s, "currency": r["currency"],
+            "d": [[i.strftime("%Y-%m-%d"), x.Open, x.High, x.Low, x.Close] for i, x in px_adj[s].iloc[-CHART_DAYS:].iterrows()],
+            "hist": table, "hist_source": r["hist_source"], "hist_currency": "USD" if source == "SEC 10-K" else r.get("financial_currency"),
+        })
 
     df = pd.DataFrame(rows).set_index("symbol")
     sc = scoring.score(df)
@@ -210,12 +240,21 @@ def main(argv=None):
         if st:
             sec_status[st] = sec_status.get(st, 0) + 1
 
+    # --- Erfolgskontrolle (wöchentliche Kohorten, Rendite gegen Universum und Indizes) ---
+    track = _load(state / "tracking.json", {})
+    track = tracking.snapshot(track, now.date(), out_rows)
+    _save(state / "tracking.json", track)
+    track_eval = tracking.evaluate(track, {k: v["Close"] for k, v in prices.items()})
+
     meta = {
         "generated_at": now.isoformat(timespec="seconds"),
         "runtime_s": round(time.time() - t0),
         "universe": len(symbols), "rated": int(df["score"].notna().sum()), "rows": len(out_rows),
         "failed": failed, "warnings": warnings, "flag_counts": flag_counts, "sec_status": sec_status,
         "fx_to_eur": fx,
+        "tracking": track_eval,
+        "hist_sources": {src: sum(1 for r in out_rows if r.get("hist_source") == src)
+                         for src in ("SEC 10-K", "Yahoo-Jahresabschlüsse")},
         "price_date_max": max((r["last_date"] for r in out_rows), default=None),
         "pillars": {n: {"weight": p["weight"], "in_score": p["in_score"],
                         "metrics": [[m, scoring.LABELS[m], hb] for m, hb in p["metrics"]]}

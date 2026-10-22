@@ -1,0 +1,281 @@
+"""Mehrjahres-Historie (Abschnitt 7 der Analyse-Anweisungen: 3-5+ Geschäftsjahre).
+
+Quellen:
+  - US: SEC EDGAR companyfacts (10-K, bis 10 Jahre) [IST]
+  - Übrige: Yahoo-Jahresabschlüsse (meist 4 Jahre) [IST, Quelle Yahoo]
+Daraus abgeleitet [BERECHNET]: ROIC, Margen-Stabilität, Cash Conversion, Verwässerung,
+5-Jahres-Wachstum, historisches KGV. Fehlt eine Größe, bleibt sie leer (keine Annahmen),
+mit einer Ausnahme: Ohne berichtete Steuerquote wird für den ROIC kein Wert gebildet.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import logging
+import statistics as st
+import time
+
+import pandas as pd
+
+from . import fetch
+
+log = logging.getLogger(__name__)
+HIST_VERSION = 1
+MAX_YEARS = 10
+
+# --- SEC: Konzepte je Größe (erstes vorhandenes gewinnt, Umsatz: größter Wert je Stichtag) ---
+SEC_DURATION = {
+    "revenue": (["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet",
+                 "RevenueFromContractWithCustomerIncludingAssessedTax"], "USD", "max"),
+    "op_income": (["OperatingIncomeLoss"], "USD", "first"),
+    "net_income": (["NetIncomeLoss", "ProfitLoss"], "USD", "first"),
+    "eps": (["EarningsPerShareDiluted"], "USD/shares", "first"),
+    "shares": (["WeightedAverageNumberOfDilutedSharesOutstanding"], "shares", "first"),
+    "ocf": (["NetCashProvidedByUsedInOperatingActivities",
+             "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"], "USD", "first"),
+    "capex": (["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"], "USD", "first"),
+    "sbc": (["ShareBasedCompensation", "AllocatedShareBasedCompensationExpense"], "USD", "first"),
+    "pretax": (["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+                "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
+               "USD", "first"),
+    "tax": (["IncomeTaxExpenseBenefit"], "USD", "first"),
+}
+SEC_INSTANT = {
+    "equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+    "debt": ["LongTermDebt", "LongTermDebtNoncurrent"],
+    "debt_current": ["LongTermDebtCurrent", "DebtCurrent"],
+    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+}
+
+
+def _annual_records(gaap: dict, concept: str, unit: str) -> dict[str, float]:
+    """end -> Wert (10-K, ~1 Jahr Dauer, jüngste Einreichung gewinnt bei Restatements)."""
+    best: dict[str, tuple[str, float]] = {}
+    for rec in gaap.get(concept, {}).get("units", {}).get(unit, []):
+        if not str(rec.get("form", "")).startswith("10-K") or "start" not in rec:
+            continue
+        days = (dt.date.fromisoformat(rec["end"]) - dt.date.fromisoformat(rec["start"])).days
+        if not 340 <= days <= 380:
+            continue
+        filed = rec.get("filed", "")
+        if rec["end"] not in best or filed > best[rec["end"]][0]:
+            best[rec["end"]] = (filed, float(rec["val"]))
+    return {k: v for k, (_, v) in best.items()}
+
+
+def _instant_records(gaap: dict, concept: str) -> dict[str, float]:
+    best: dict[str, tuple[str, float]] = {}
+    for rec in gaap.get(concept, {}).get("units", {}).get("USD", []):
+        if not str(rec.get("form", "")).startswith("10-K") or "start" in rec:
+            continue
+        filed = rec.get("filed", "")
+        if rec["end"] not in best or filed > best[rec["end"]][0]:
+            best[rec["end"]] = (filed, float(rec["val"]))
+    return {k: v for k, (_, v) in best.items()}
+
+
+SPLIT_FACTORS = (2, 3, 4, 5, 8, 10, 15, 20, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 10, 1 / 20)
+
+
+def split_adjust(years: list[dict]) -> list[dict]:
+    """Ältere Jahresberichte enthalten EPS/Aktienzahl vor späteren Splits. Springt die verwässerte
+    Aktienzahl zwischen zwei Jahren genau um einen Split-Faktor, werden alle früheren Jahre angepasst."""
+    for i in range(len(years) - 1, 0, -1):
+        a, b = years[i - 1].get("shares"), years[i].get("shares")
+        if not a or not b:
+            continue
+        ratio = b / a
+        f = next((f for f in SPLIT_FACTORS if abs(ratio / f - 1) < 0.06), None)
+        if f is None:
+            continue
+        for y in years[:i]:
+            if y.get("shares"):
+                y["shares"] *= f
+            if y.get("eps") is not None:
+                y["eps"] /= f
+            y["split_adjusted"] = True
+    return years
+
+
+def extract_sec(facts: dict) -> list[dict]:
+    gaap = facts.get("facts", {}).get("us-gaap", {})
+    series: dict[str, dict[str, float]] = {}
+    for key, (concepts, unit, mode) in SEC_DURATION.items():
+        merged: dict[str, float] = {}
+        for c in concepts:
+            for end, v in _annual_records(gaap, c, unit).items():
+                if mode == "max":
+                    merged[end] = max(merged.get(end, v), v)
+                else:
+                    merged.setdefault(end, v)
+        series[key] = merged
+    ends = sorted(set(series["revenue"]) | set(series["net_income"]))[-MAX_YEARS:]
+    for key, concepts in SEC_INSTANT.items():
+        merged = {}
+        for c in concepts:
+            for end, v in _instant_records(gaap, c).items():
+                merged.setdefault(end, v)
+        series[key] = merged
+    years = []
+    for e in ends:
+        y = {"fy_end": e}
+        for key in list(SEC_DURATION) + list(SEC_INSTANT):
+            y[key] = series[key].get(e)
+        if y.get("debt") is not None or y.get("debt_current") is not None:
+            y["debt"] = (y.get("debt") or 0) + (y.get("debt_current") or 0)
+        y.pop("debt_current", None)
+        years.append(y)
+    return split_adjust(years)
+
+
+# --- Yahoo-Jahresabschlüsse (Nicht-US) ---
+Y_ROWS = {
+    "revenue": ("is", ["Total Revenue", "Operating Revenue"]),
+    "op_income": ("is", ["Operating Income", "Total Operating Income As Reported"]),
+    "net_income": ("is", ["Net Income", "Net Income Common Stockholders"]),
+    "eps": ("is", ["Diluted EPS"]),
+    "shares": ("is", ["Diluted Average Shares"]),
+    "pretax": ("is", ["Pretax Income"]),
+    "tax": ("is", ["Tax Provision"]),
+    "ocf": ("cf", ["Operating Cash Flow"]),
+    "capex": ("cf", ["Capital Expenditure"]),
+    "sbc": ("cf", ["Stock Based Compensation"]),
+    "equity": ("bs", ["Stockholders Equity", "Common Stock Equity"]),
+    "debt": ("bs", ["Total Debt"]),
+    "cash": ("bs", ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"]),
+}
+
+
+def extract_yahoo(stmts: dict[str, pd.DataFrame]) -> list[dict]:
+    cols = set()
+    for df in stmts.values():
+        if df is not None and not df.empty:
+            cols |= set(df.columns)
+    years = []
+    for c in sorted(cols)[-MAX_YEARS:]:
+        y = {"fy_end": c.date().isoformat()}
+        for key, (which, rows) in Y_ROWS.items():
+            df = stmts.get(which)
+            v = None
+            if df is not None and c in df.columns:
+                for r in rows:
+                    if r in df.index and pd.notna(df.at[r, c]):
+                        v = float(df.at[r, c])
+                        break
+            y[key] = v
+        if y["capex"] is not None:
+            y["capex"] = abs(y["capex"])  # Yahoo: negativ (Mittelabfluss), SEC: positiv
+        if y["revenue"] is not None or y["net_income"] is not None:
+            years.append(y)
+    return split_adjust(years)
+
+
+def refresh_yahoo(universe: list[dict], cache: dict, max_checks: int = 200) -> dict:
+    """Historie für Nicht-US-Werte (Yahoo), max. 1x pro Woche je Aktie."""
+    today = dt.date.today()
+
+    def age(sym):
+        c = cache.get(sym)
+        if not c or c.get("v") != HIST_VERSION:
+            return 10_000
+        return (today - dt.date.fromisoformat(c["checked"])).days
+
+    todo = sorted((u for u in universe if "." in u["symbol"] and age(u["symbol"]) >= 7),
+                  key=lambda u: -age(u["symbol"]))[:max_checks]
+    for u in todo:
+        stmts = fetch.fetch_statements(u["symbol"])
+        if stmts:
+            cache[u["symbol"]] = {"v": HIST_VERSION, "checked": today.isoformat(), "source": "Yahoo-Jahresabschlüsse",
+                                  "years": extract_yahoo(stmts)}
+        time.sleep(0.3)
+    return cache
+
+
+# --- Kennzahlen aus der Historie ---
+def _cagr(a, b, k):
+    if a is None or b is None or a <= 0 or b <= 0 or k <= 0:
+        return None
+    return (b / a) ** (1 / k) - 1
+
+
+def _price_at(close: pd.Series | None, date: str):
+    if close is None or close.empty:
+        return None
+    s = close.loc[:pd.Timestamp(date)]
+    if s.empty or (pd.Timestamp(date) - s.index[-1]).days > 10:
+        return None
+    return float(s.iloc[-1])
+
+
+def derive(years: list[dict], close: pd.Series | None = None, same_currency: bool = True) -> dict:
+    """Abgeleitete Kennzahlen [BERECHNET] + kompakte Jahrestabelle für die Oberfläche."""
+    ys = [y for y in years if y.get("revenue") or y.get("net_income")]
+    out: dict = {"hist_years": len(ys)}
+    if len(ys) < 3:
+        out["hist_table"] = []
+        return out
+    last5 = ys[-5:]
+    k = len(last5) - 1
+
+    def g(y, key):
+        v = y.get(key)
+        return None if v is None or v != v else v
+
+    out["rev_cagr"] = _cagr(g(last5[0], "revenue"), g(last5[-1], "revenue"), k)
+    out["eps_cagr"] = _cagr(g(last5[0], "eps"), g(last5[-1], "eps"), k)
+    out["share_cagr"] = _cagr(g(last5[0], "shares"), g(last5[-1], "shares"), k)
+
+    table = []
+    margins, fcf_m, roics, fcfs, nis, sbc_r = [], [], [], [], [], []
+    for y in ys:
+        rev, op, ni = g(y, "revenue"), g(y, "op_income"), g(y, "net_income")
+        fcf = g(y, "ocf") - g(y, "capex") if g(y, "ocf") is not None and g(y, "capex") is not None else None
+        tax_rate = None
+        if g(y, "tax") is not None and g(y, "pretax") and g(y, "pretax") > 0:
+            tax_rate = min(max(g(y, "tax") / g(y, "pretax"), 0.0), 0.4)
+        ic = None
+        if g(y, "equity") is not None and g(y, "debt") is not None and g(y, "cash") is not None:
+            ic = g(y, "equity") + g(y, "debt") - g(y, "cash")
+        roic = op * (1 - tax_rate) / ic if (op is not None and tax_rate is not None and ic and ic > 0) else None
+        if roic is not None and not -1 < roic < 2:
+            roic = None
+        om = op / rev if (op is not None and rev and rev > 0) else None
+        row = {"fy_end": y["fy_end"], "revenue": rev, "op_margin": om, "eps": g(y, "eps"), "fcf": fcf,
+               "roic": roic, "shares": g(y, "shares"), "net_income": ni}
+        table.append(row)
+        if y in last5:
+            if om is not None:
+                margins.append(om)
+            if fcf is not None and rev and rev > 0:
+                fcf_m.append(fcf / rev)
+            if roic is not None:
+                roics.append(roic)
+            if fcf is not None and ni is not None:
+                fcfs.append(fcf)
+                nis.append(ni)
+            if g(y, "sbc") is not None and rev and rev > 0:
+                sbc_r.append(g(y, "sbc") / rev)
+
+    out["op_margin_avg5"] = st.mean(margins) if len(margins) >= 3 else None
+    out["op_margin_std"] = st.pstdev(margins) if len(margins) >= 3 else None
+    out["fcf_margin_avg5"] = st.mean(fcf_m) if len(fcf_m) >= 3 else None
+    out["fcf_pos_share"] = sum(1 for x in fcf_m if x > 0) / len(fcf_m) if len(fcf_m) >= 3 else None
+    out["roic_med5"] = st.median(roics) if len(roics) >= 3 else None
+    out["roic_last"] = table[-1]["roic"]
+    out["cash_conversion"] = (sum(fcfs) / sum(nis) if len(fcfs) >= 3 and sum(nis) > 0 else None)
+    if out["cash_conversion"] is not None and not -3 < out["cash_conversion"] < 5:
+        out["cash_conversion"] = None
+    out["sbc_rev"] = st.mean(sbc_r) if len(sbc_r) >= 2 else None
+    out["loss_years5"] = sum(1 for y in last5 if (g(y, "net_income") or 0) < 0)
+
+    # Historisches KGV: Kurs am Geschäftsjahresende / verwässertes EPS dieses Jahres
+    pes = []
+    if same_currency and close is not None:
+        for y in last5:
+            eps, p = g(y, "eps"), _price_at(close, y["fy_end"])
+            if eps and eps > 0 and p:
+                pe = p / eps
+                if 0 < pe < 300:
+                    pes.append(pe)
+    out["pe_hist_med5"] = st.median(pes) if len(pes) >= 3 else None
+    out["hist_table"] = table[-MAX_YEARS:]
+    return out
