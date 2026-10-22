@@ -63,6 +63,10 @@ class PipelineTest(unittest.TestCase):
                 mock.patch.object(run.fetch, "fetch_fx_to_eur", return_value={"EUR": 1.0, "USD": 0.9}):
             run.main(["--state", tmp, "--skip-sec", "--workers", "1"])
             data = json.loads((Path(tmp) / "public" / "screener.json").read_text())
+            # Wächter: fehlende Werte (NaN) dürfen nicht als vorhanden zählen
+            cov = data["meta"]["metric_coverage"]
+            self.assertLess(cov["pe_ttm"], 1.0)        # Verlustbringer haben kein KGV
+            self.assertEqual(cov["roic_med5"], 0.0)    # ohne Historie kein ROIC
             self.assertEqual(data["meta"]["failed"], ["BAD"])
             rows = data["rows"]
             self.assertEqual(len(rows), n)
@@ -251,14 +255,17 @@ class SafetyTest(unittest.TestCase):
             self.assertEqual(guard.check(Path(tmp) / "leer", new), [])
 
     def test_quality_alarms(self):
-        prev = {"metric_coverage": {"pe_ttm": 0.9, "rev_eps_90d": 0.95, "roic_med5": 0.2}, "rows": 620, "rated": 615}
-        ok = {"metric_coverage": {"pe_ttm": 0.88, "rev_eps_90d": 0.94, "roic_med5": 0.05}, "rows": 618, "rated": 612}
+        v = {"coverage_version": run.COVERAGE_VERSION}
+        prev = {**v, "metric_coverage": {"pe_ttm": 0.9, "rev_eps_90d": 0.95, "roic_med5": 0.2}, "rows": 620, "rated": 615}
+        ok = {**v, "metric_coverage": {"pe_ttm": 0.88, "rev_eps_90d": 0.94, "roic_med5": 0.05}, "rows": 618, "rated": 612}
         self.assertEqual(run.quality_alarms(prev, ok), [])   # roic unter 30 % Basis -> nicht überwacht
-        bad = {"metric_coverage": {"pe_ttm": 0.88, "rev_eps_90d": 0.10}, "rows": 500, "rated": 490}
+        bad = {**v, "metric_coverage": {"pe_ttm": 0.88, "rev_eps_90d": 0.10}, "rows": 500, "rated": 490}
         alarms = run.quality_alarms(prev, bad)
         self.assertEqual(len(alarms), 3)
         self.assertIn("rev_eps_90d", alarms[0])
         self.assertIn("⚠️", run.alarm_markdown(alarms, {"generated_at": "2026-10-23T22:30:00"}))
+        # alte Messung (andere Version) -> kein Kennzahlen-Vergleich
+        self.assertEqual(run.quality_alarms({**prev, "coverage_version": 1}, {**bad, "rows": 620, "rated": 615}), [])
 
 
 class HistoryTest(unittest.TestCase):
