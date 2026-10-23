@@ -7,8 +7,8 @@ Unternehmen (zwei unabhängige Methoden, Mittelwert):
        Owner Earnings = operativer Cashflow - min(Investitionen, Abschreibungen): Investitionen über den
        Abschreibungen sind Wachstum (z.B. KI-Rechenzentren), kein Erhalt.
        Belegte Zykliker: normalisiert = Median-Marge 5 J. × aktueller Umsatz je Aktie.
-     Wachstum Jahre 1-5 = Median aus Umsatz-CAGR 5 J., aktuellem Umsatzwachstum und Konsens-EPS-Wachstum,
-     begrenzt -3 … +20 %; Jahre 6-10 linear auf 3 %, danach 2,5 % ewig.
+     Wachstum Jahre 1-5 = Median aus Umsatz-CAGR (min. aus 5 und bis 10 J.), aktuellem Umsatzwachstum und
+     Konsens-EPS-Wachstum, begrenzt -3 … +15 %; Jahre 6-10 linear auf 3 %, danach 2,5 % ewig.
      Diskontsatz = 4,3 % + Beta (Blume, 0,8-1,6) × 4,5 % + Zuschläge (Verschuldung > 3x EBITDA +1 %,
      instabile Marge/Verlustjahre +1 %; nur ohne Beta: Volatilität > 40 % +0,5 %).
   2. Multiplikator: Konsens-EPS nächstes GJ (Zykliker: normalisiertes EPS) × faires KGV
@@ -29,7 +29,7 @@ R_BASE, R_FIN, R_REIT = 0.085, 0.10, 0.085   # R_BASE nur noch als Rückfall ohn
 RISK_FREE, EQUITY_PREMIUM = 0.043, 0.045      # 10-j. US-Staatsanleihe ~4,3 %, Aktienrisikoprämie 4,5 % [SCHÄTZUNG]
 BETA_MIN, BETA_MAX = 0.8, 1.6               # Untergrenze: auch "defensive" Einzelaktien kosten >= ~8 %
 G_TERMINAL, G_FADE_TO = 0.025, 0.03
-G_MIN, G_MAX = -0.03, 0.20
+G_MIN, G_MAX = -0.03, 0.15   # > 15 % über 5 Jahre schaffen nur wenige Großunternehmen
 PE_MIN, PE_MAX = 10.0, 30.0
 PRICE_PTS = [(-0.50, 0), (-0.25, 2), (0.0, 4.5), (0.15, 6), (0.30, 7.5), (0.50, 9), (0.75, 10)]
 NEUTRAL_P = 4.5
@@ -43,6 +43,9 @@ def growth_inputs(r: dict) -> list[float]:
     """Drei Blickwinkel: Umsatz-CAGR 5 J. (Vergangenheit), Umsatz aktuell (Gegenwart), Konsens-EPS-Wachstum
     (Erwartung). Das Konsenswachstum wird auf -20…+40 % begrenzt (Einmaleffekte im aktuellen Gewinn)."""
     hist, now, fwd = _v(r.get("rev_cagr")), _v(r.get("rev_growth")), _v(r.get("eps_growth_fwd"))
+    long = _v(r.get("rev_cagr_long"))
+    if hist is not None and long is not None:
+        hist = min(hist, long)   # Corona-Basiseffekt im 5-Jahres-Fenster ausblenden
     if fwd is not None:
         fwd = max(-0.20, min(0.40, fwd))
     return [x for x in (hist, now, fwd) if x is not None]
@@ -175,6 +178,9 @@ def fair_value(r: dict, q_score: float | None, peer_pe: float | None) -> dict | 
         # (z.B. Novo Nordisk) weiter angesetzt wird. Graham (8,5 + 2g) war für Wachstumswerte zu großzügig.
         g_pe = 12 + 100 * max(0.0, g or 0.0)
         clip = lambda x: max(PE_MIN, min(PE_MAX, x))
+        if "eps_wachstum_unplausibel" in flags and not cyclical:
+            eps = None   # Konsens-EPS passt nicht zum Ist-Gewinn (Split, Abspaltung, Datenfehler) -> nicht nutzen
+            notes.append("Konsens-EPS unplausibel – nur DCF")
         if eps and eps > 0 and g is not None:
             if hist_pe:
                 fpe = clip(0.5 * clip(hist_pe) + 0.5 * clip(g_pe))
@@ -200,10 +206,17 @@ def fair_value(r: dict, q_score: float | None, peer_pe: float | None) -> dict | 
     if growth_conflict(r) and conf != "niedrig":
         conf = "mittel" if conf == "hoch" else "niedrig"
         notes.append("Wachstum uneinheitlich (Vergangenheit/Gegenwart/Erwartung) – Belastbarkeit herabgestuft")
+    upside = fv / price - 1
+    if upside > 1.5:
+        return {"fair_value": None, "reason": f"Rechnerischer Wert {upside:+.0%} über Kurs – bei Großunternehmen fast immer "
+                                              "Datenfehler (Währung, Aktiengattung, Abspaltung) oder Sondersituation; nicht bewertet."}
+    if upside > 0.60 and conf != "niedrig":
+        # Der Markt sieht etwas, das Vergangenheitszahlen nicht zeigen (Disruption, Rechtsrisiken, Zyklus)
+        conf = "mittel" if conf == "hoch" else "niedrig"
+        notes.append("Fairer Wert > 60 % über Kurs – Markt preist Risiko ein, Grund prüfen; Belastbarkeit herabgestuft")
     mos = 0.10 if (q_score or 0) >= 7.5 else 0.20 if (q_score or 0) >= 6 else 0.30
     if conf == "niedrig":
         mos += 0.10
-    upside = fv / price - 1
     p_score = scale(upside, PRICE_PTS)
     if conf == "niedrig":
         p_score = NEUTRAL_P + (p_score - NEUTRAL_P) * 0.5

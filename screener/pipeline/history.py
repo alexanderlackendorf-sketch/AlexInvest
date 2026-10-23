@@ -271,6 +271,11 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
 
     out["rev_cagr"] = _cagr(g(last5[0], "revenue"), g(last5[-1], "revenue"), k)
     out["eps_cagr"] = _cagr(g(last5[0], "eps"), g(last5[-1], "eps"), k)
+    # Langfrist-CAGR (bis 10 J.): der 5-Jahres-Wert startet derzeit im Corona-Tief 2020/21 und überzeichnet
+    # das Wachstum von Reise-, Freizeit- und Gastro-Werten
+    if len(ys) >= 7:
+        lo = ys[-10:]
+        out["rev_cagr_long"] = _cagr(g(lo[0], "revenue"), g(lo[-1], "revenue"), len(lo) - 1)
     out["share_cagr"] = _cagr(g(last5[0], "shares"), g(last5[-1], "shares"), k)
 
     table = []

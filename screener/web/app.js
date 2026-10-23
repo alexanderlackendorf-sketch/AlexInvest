@@ -441,7 +441,7 @@ function method() {
         Nur ohne Mehrjahresdaten wird Yahoos FCF der letzten 12 Monate genutzt.
         Owner Earnings = operativer Cashflow − min(Investitionen, Abschreibungen). Investitionen über den Abschreibungen gelten als Wachstum, nicht als Erhalt.
         Deshalb werden Unternehmen in Investitionsphasen (z.B. KI-Rechenzentren) nicht als „teuer“ abgestraft.</li>
-      <li>Wachstum Jahre 1–5 = <b>Median</b> aus 5-Jahres-Umsatz-CAGR, aktuellem Umsatzwachstum und Konsens-Gewinnwachstum (−3 … +20 %). Ab Jahr 6 läuft es linear auf 3 % aus, danach 2,5 % dauerhaft.
+      <li>Wachstum Jahre 1–5 = <b>Median</b> aus Umsatz-CAGR (der niedrigere Wert aus 5 und bis zu 10 Jahren, damit der Corona-Basiseffekt nicht zählt), aktuellem Umsatzwachstum und Konsens-Gewinnwachstum (−3 … +15 %). Ab Jahr 6 läuft es linear auf 3 % aus, danach 2,5 % dauerhaft.
         Liegen die drei Werte mehr als 15 Prozentpunkte auseinander, sinkt die Belastbarkeit um eine Stufe.</li>
       <li>Diskontsatz nach CAPM: 4,3 % + Beta × 4,5 %. Das Beta wird nach Blume geglättet (0,67 × Beta + 0,33) und auf 0,8–1,6 begrenzt, also 7,9–11,5 %.
         Zuschläge: +1 % bei Verschuldung über 3× EBITDA, +1 % bei schwankenden Margen oder Verlustjahren.</li>
@@ -449,7 +449,10 @@ function method() {
         Ohne eigene Historie gilt nur das wachstumsgerechte KGV. Begrenzt auf 10–30.</li>
       <li><b>Banken und Versicherer:</b> Buchwert × gerechtfertigtes KBV = (ROE − 3 %) / (10 % − 3 %). <b>REITs:</b> Dividendenmodell, grob.</li>
       <li><b>Belegte Zykliker:</b> normalisierte Marge (Median 5 J.) × aktueller Umsatz. Ohne Mehrjahresdaten gibt es keinen fairen Wert.</li>
-      <li>Fairer Wert = Mittel der Methoden. <b>Belastbarkeit</b>: hoch, wenn die Methoden höchstens 30 % auseinanderliegen, mittel bis 80 %, sonst niedrig.</li>
+      <li>Fairer Wert = Mittel der Methoden. <b>Belastbarkeit</b>: hoch, wenn die Methoden höchstens 30 % auseinanderliegen, mittel bis 80 %, sonst niedrig.
+        Eine Stufe tiefer bei widersprüchlichem Wachstum oder wenn der faire Wert mehr als 60 % über dem Kurs liegt: Dann preist der Markt meist ein Risiko ein, das die Vergangenheitszahlen nicht zeigen (Disruption, Klagen, Zyklus).
+        Ist das Konsens-EPS unplausibel, zählt nur der DCF. Über +150 % Potenzial wird nicht bewertet (fast immer Datenfehler oder Sondersituation).
+        „Kandidat“ setzt mindestens mittlere Belastbarkeit voraus; sonst „Beobachten“.</li>
     </ul>
     <h4>3 · Kaufkurs und Preis-Score</h4>
     <p class="small">Kaufkurs = fairer Wert × (1 − Sicherheitsmarge). Die Sicherheitsmarge beträgt 10 % bei Qualität ≥ 7,5, 20 % bei Qualität ≥ 6, sonst 30 %; +10 % bei niedriger Belastbarkeit.

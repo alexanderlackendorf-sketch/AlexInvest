@@ -241,6 +241,11 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
         if (r.get("sector") not in CYCLICAL_SECTORS and (r.get("hist_years") or 0) >= 5
                 and drop == drop and drop is not None and drop > CYCLE_DROP):
             continue
+        pn = r.get("pe_norm")
+        if r.get("sector") in CYCLICAL_SECTORS and not (pn == pn and pn is not None and pn > 0):
+            # Rohstoffe/Energie ohne Mehrjahresdaten: Gewinnniveau im Zyklus nicht einordenbar
+            extra_flags[s].append("zyklik_spitzengewinn")
+            continue
         pe, med = r.get("pe_ttm"), sector_pe.get(r.get("sector"))
         eg = r.get("earn_growth")
         om, om5 = r.get("op_margin"), r.get("op_margin_avg5")
@@ -367,8 +372,10 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
         code, text = ("beobachten", "Gutes Unternehmen – Bewertung nicht belastbar") if q >= Q_GOOD else (
             "neutral", "Bewertung nicht belastbar")
     elif q >= Q_GOOD:
-        if in_buy and "zyklik_spitzengewinn" not in flags:
+        if in_buy and "zyklik_spitzengewinn" not in flags and v.get("confidence") != "niedrig":
             code, text = "kandidat", "Gutes Unternehmen im Kaufbereich – Kandidat für Einzelanalyse"
+        elif in_buy:
+            code, text = "beobachten", "Gutes Unternehmen, rechnerisch günstig – fairer Wert unsicher, Grund für Abschlag prüfen"
         elif below_fv:
             code, text = "beobachten", "Gutes Unternehmen – nahe Kaufbereich" + buy_txt
         else:

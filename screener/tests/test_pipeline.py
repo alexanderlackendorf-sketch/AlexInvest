@@ -206,6 +206,11 @@ class ValuationModelTest(unittest.TestCase):
         r2 = dict(r, fcf_yield=0.005, owner_ps_trading=4.0)
         self.assertIn("Owner Earnings", valuation.fair_value(r2, 8.0, 18.0)["methods"][0]["detail"])
 
+    def test_extreme_upside_not_valued(self):
+        r = {"price": 10.0, "rev_cagr": 0.08, "rev_growth": 0.08, "pe_fwd": 2.0, "eps_fwd": 5.0, "pe_hist_med5": 20.0,
+             "flags": []}
+        self.assertIsNone(valuation.fair_value(r, 8.0, 18.0)["fair_value"])
+
     def test_owner_outlier_year_smoothed(self):
         r = {"price": 100.0, "rev_ps_trading": 50.0, "owner_ps_trading": 2.5, "owner_margin_last": 0.05,
              "owner_margin_med5": 0.15, "sbc_ps_trading": 0.0}
