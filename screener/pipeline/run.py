@@ -251,6 +251,11 @@ def main(argv=None):
             "symbol": s, "currency": r["currency"],
             "d": [[i.strftime("%Y-%m-%d"), x.Open, x.High, x.Low, x.Close] for i, x in px_adj[s].iloc[-CHART_DAYS:].iterrows()],
             "hist": table, "hist_source": r["hist_source"], "hist_currency": "USD" if source == "SEC 10-K" else r.get("financial_currency"),
+            # Steckbrief: Firmenprofil und Schlagzeilen (Yahoo) – nur hier, nicht in der großen Übersichtsdatei
+            "profile": {k: infos[s][0].get(k) for k in ("longBusinessSummary", "fullTimeEmployees", "city", "country",
+                                                        "website", "industry", "sector")},
+            "news": infos[s][0].get("news") or [],
+            "info_date": infos[s][1],
         })
 
     for r in rows:

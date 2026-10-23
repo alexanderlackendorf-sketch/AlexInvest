@@ -264,7 +264,7 @@ class PackageFourTest(unittest.TestCase):
         self.assertEqual(st["verdicts"], {"A": "kandidat", "B": "beobachten"})
         rows[0]["verdict_code"], rows[0]["verdict"] = "beobachten", "Beobachten"
         md2, _ = digest.build(data, st, ["B"], "https://x/", None, dt.date(2026, 10, 30))
-        self.assertIn("Nicht mehr Kandidat (1)", md2)
+        self.assertIn("Nicht mehr im Kaufbereich (1)", md2)
 
 
 class SafetyTest(unittest.TestCase):
