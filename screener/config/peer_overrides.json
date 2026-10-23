@@ -1,0 +1,5 @@
+{
+  "_comment": "Feste Vergleichsgruppen für Geschäftsmodelle, die Yahoo uneinheitlich einordnet (z.B. Uber als 'Software'). Gruppe -> Yahoo-Symbole. Eine Gruppe braucht mind. 8 Werte, sonst greift der Sektor.",
+  "Plattformen & Marktplätze": ["UBER", "DASH", "ABNB", "BKNG", "EXPE", "EBAY", "MELI", "SE", "PDD", "SHOP.TO",
+                                "9988.HK", "3690.HK", "PRX.AS", "ZAL.DE"]
+}
