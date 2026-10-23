@@ -282,7 +282,18 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
                 sbc_r.append(g(y, "sbc") / rev)
 
     out["op_margin_avg5"] = st.mean(margins) if len(margins) >= 3 else None
-    out["op_margin_std"] = st.pstdev(margins) if len(margins) >= 3 else None
+    # Stabilität = Schwankung UM DEN TREND (Residuen einer linearen Regression), nicht die reine
+    # Standardabweichung: eine stetig steigende Marge ist kein Risiko, ein Auf und Ab schon.
+    out["op_margin_trend"] = out["op_margin_std"] = None
+    if len(margins) >= 3:
+        # Krisenjahre (z.B. Kreuzfahrt 2021: -394 %) begrenzen, damit sie Trend und Stabilität nicht dominieren
+        mw = [min(max(m, -0.5), 0.6) for m in margins]
+        xs = list(range(len(mw)))
+        xm, ym = st.mean(xs), st.mean(mw)
+        slope = sum((x - xm) * (y - ym) for x, y in zip(xs, mw)) / sum((x - xm) ** 2 for x in xs)
+        resid = [y - (ym + slope * (x - xm)) for x, y in zip(xs, mw)]
+        out["op_margin_trend"] = slope
+        out["op_margin_std"] = (sum(e * e for e in resid) / len(resid)) ** 0.5
     out["fcf_margin_avg5"] = st.mean(fcf_m) if len(fcf_m) >= 3 else None
     out["fcf_pos_share"] = sum(1 for x in fcf_m if x > 0) / len(fcf_m) if len(fcf_m) >= 3 else None
     out["roic_med5"] = st.median(roics) if len(roics) >= 3 else None

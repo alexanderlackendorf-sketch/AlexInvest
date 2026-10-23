@@ -18,13 +18,17 @@ Bewertung rot -> max. 6, Value-Trap-Risiko -> max. 6, unzureichende Daten -> kei
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pandas as pd
 
 # (Kennzahl, höher_ist_besser)
 PILLARS: dict[str, dict] = {
     "Qualität": {"weight": 0.35, "in_score": True, "metrics": [
         ("roic_med5", True), ("roe", True), ("op_margin", True), ("gross_margin", True), ("fcf_margin", True),
-        ("net_debt_ebitda", False), ("roa_fin", True), ("op_margin_std", False), ("cash_conversion", True),
+        ("net_debt_ebitda", False), ("roa_fin", True), ("op_margin_std", False), ("op_margin_trend", True),
+        ("cash_conversion", True),
         ("share_cagr", False),
     ]},
     "Bewertung": {"weight": 0.30, "in_score": True, "metrics": [
@@ -46,7 +50,7 @@ PILLARS: dict[str, dict] = {
 }
 # Zusatzkennzahlen aus Historie/Revisionen: fehlen oft bei Nicht-US-Werten -> zählen nicht in die
 # Datenabdeckung (sonst würden Auslandswerte systematisch "nicht beurteilbar")
-OPTIONAL = {"pe_norm", "roic_med5", "op_margin_std", "cash_conversion", "share_cagr", "pe_vs_hist", "implied_growth",
+OPTIONAL = {"op_margin_trend", "pe_norm", "roic_med5", "op_margin_std", "cash_conversion", "share_cagr", "pe_vs_hist", "implied_growth",
             "rev_cagr", "eps_cagr", "rev_eps_90d", "rev_breadth"}
 SCORE_PILLARS = [n for n, p in PILLARS.items() if p["in_score"]]
 LABELS = {"pe_fwd": "KGV (fwd)", "pe_ttm": "KGV (ttm)", "ev_ebitda": "EV/EBITDA", "fcf_yield": "FCF-Rendite",
@@ -56,7 +60,7 @@ LABELS = {"pe_fwd": "KGV (fwd)", "pe_ttm": "KGV (ttm)", "ev_ebitda": "EV/EBITDA"
           "rev_growth": "Umsatzwachstum", "earn_growth": "Gewinnwachstum", "eps_growth_fwd": "EPS-Wachstum erw.",
           "mom_12_1": "Momentum 12-1M", "ret_3m": "Performance 3M", "dist_sma200": "Abstand SMA200",
           "analyst_upside": "Analysten-Upside", "analyst_rec": "Analysten-Empfehlung",
-          "roic_med5": "ROIC (Median 5J)", "op_margin_std": "Margen-Schwankung 5J", "cash_conversion": "Cash Conversion 5J",
+          "roic_med5": "ROIC (Median 5J)", "op_margin_std": "Margen-Schwankung um den Trend 5J", "op_margin_trend": "Margen-Trend 5J (Pp. p.a.)", "cash_conversion": "Cash Conversion 5J",
           "share_cagr": "Aktienzahl-Veränderung p.a.", "pe_vs_hist": "KGV vs. eigener 5J-Median",
           "implied_growth": "Eingepreistes FCF-Wachstum (Reverse-DCF)", "rev_cagr": "Umsatz-CAGR 5J",
           "eps_cagr": "EPS-CAGR 5J", "pe_norm": "KGV auf normalisierten Gewinn (Median-Marge 5J)", "rev_eps_90d": "EPS-Revision 90 Tage", "rev_breadth": "Revisions-Saldo 30 Tage"}
@@ -127,7 +131,23 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def peer_group(sector, industry) -> str | None:
+_OVERRIDES_FILE = Path(__file__).resolve().parent.parent / "config" / "peer_overrides.json"
+
+
+def _load_overrides() -> dict[str, str]:
+    try:
+        cfg = json.loads(_OVERRIDES_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return {sym: grp for grp, syms in cfg.items() if not grp.startswith("_") for sym in syms}
+
+
+PEER_OVERRIDES = _load_overrides()
+
+
+def peer_group(sector, industry, symbol: str | None = None) -> str | None:
+    if symbol in PEER_OVERRIDES:
+        return PEER_OVERRIDES[symbol]
     ind = industry.lower() if isinstance(industry, str) else ""
     for name, keys in PEER_GROUPS:
         if any(k in ind for k in keys):
@@ -199,7 +219,8 @@ def entry(row) -> str:
 def score(df: pd.DataFrame) -> pd.DataFrame:
     """df: eine Zeile je Aktie (Index = Symbol). Gibt Säulen, Score, Ampeln, Urteil und Zusatz-Flags zurück."""
     df = _prepare(df)
-    df["peer_group"] = [peer_group(sec, ind) for sec, ind in zip(df["sector"], df.get("industry", [None] * len(df)))]
+    df["peer_group"] = [peer_group(sec, ind, sym) for sym, sec, ind
+                        in zip(df.index, df["sector"], df.get("industry", [None] * len(df)))]
     levels = [(df["peer_group"], MIN_GROUP_N), (df["sector"], MIN_SECTOR_N)]
 
     # --- Zyklik-Prüfung VOR der Säulenbildung (Abschnitt 7/13: zyklisch überhöhter Gewinn) ---
@@ -244,6 +265,9 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
         for m, _ in PILLARS[name]["metrics"]:
             if m not in OPTIONAL:
                 n_avail += pct[m].notna().astype(int)
+    # Das normalisierte KGV ist für Zykliker gedacht; bei Firmen, die gerade profitabel werden oder
+    # strukturell wachsen, würde der Margen-Median vergangener (Verlust-)Jahre sie zu Unrecht bestrafen
+    pct["pe_norm"] = pct["pe_norm"].where(df.index.isin(list(norm_cyc)))
     if norm_cyc:
         mask = df.index.isin(list(norm_cyc))
         for m in ("pe_ttm", "pe_fwd", "peg", "ev_ebitda", "fcf_yield", "implied_growth", "pe_vs_hist"):

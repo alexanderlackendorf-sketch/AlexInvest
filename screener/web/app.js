@@ -38,7 +38,7 @@ const TAG = {
   fcf_yield: "BERECHNET", pb: "BERECHNET", roe: "IST", op_margin: "IST", gross_margin: "IST", fcf_margin: "BERECHNET",
   net_debt_ebitda: "BERECHNET", rev_growth: "IST", earn_growth: "IST", eps_growth_fwd: "BERECHNET aus SCHÄTZUNG",
   eps: "IST / SCHÄTZUNG", div_yield: "BERECHNET", payout: "IST", beta: "IST", vol_1y: "BERECHNET",
-  roic_med5: "BERECHNET", op_margin_std: "BERECHNET", cash_conversion: "BERECHNET", share_cagr: "BERECHNET",
+  roic_med5: "BERECHNET", op_margin_std: "BERECHNET", op_margin_trend: "BERECHNET", cash_conversion: "BERECHNET", share_cagr: "BERECHNET",
   rev_cagr: "BERECHNET", eps_cagr: "BERECHNET", pe_vs_hist: "BERECHNET", pe_norm: "BERECHNET", implied_growth: "BERECHNET aus SCHÄTZUNG",
   rev_eps_90d: "BERECHNET aus SCHÄTZUNG", rev_breadth: "BERECHNET aus SCHÄTZUNG", sbc_rev: "BERECHNET",
 };
@@ -432,7 +432,8 @@ function method() {
       <li>Banken/Versicherer: EV/EBITDA, FCF und Bruttomarge [NICHT ANWENDBAR]. Stattdessen KBV und Gesamtkapitalrendite.</li>
       <li>REITs: KGV und Gewinnwachstum [NICHT ANWENDBAR] (FFO/AFFO nötig, nicht frei verfügbar). Kein KGV-Kursziel.</li>
       <li>Zykliker (Energie, Rohstoffe, Halbleiter, Auto, Chemie …): Energie und Rohstoffe gelten immer als zyklisch. Bei übrigen zyklischen Branchen (Halbleiter, Auto, Chemie …) hebt erst eine Historie von mindestens 5 Jahren ohne Umsatzeinbruch ≥ 15 % die Zykliker-Vermutung auf. Dann gilt ein Margenanstieg als strukturell. Bei Gewinnsprung &gt; 40 %, KGV &lt; 60 % des Sektormedians oder operativer Marge &gt; 150 % des eigenen 5-Jahres-Schnitts gilt dann „möglicher Spitzengewinn“. Mit Mehrjahresdaten wird dann über den <b>normalisierten Gewinn</b> bewertet (aktueller Umsatz × Median-Nettomarge 5 J.; so bleibt echtes Wachstum erhalten). KGV, EV/EBITDA, FCF-Rendite und Reverse-DCF zählen dann nicht, weil sie auf Spitzengewinnen beruhen. Kursziel = normalisiertes EPS × eigenes Median-KGV 5 J. Ohne Mehrjahresdaten zählt die Bewertung höchstens neutral, und es gibt kein Kursziel.</li>
-      <li>Vergleich: zuerst innerhalb der Branchengruppe (z.B. Halbleiter, Software, Banken; mind. 8 Werte), sonst im Sektor (mind. 10), sonst im ganzen Universum.</li>
+      <li>Vergleich: zuerst innerhalb der Branchengruppe (z.B. Halbleiter, Software, Banken; mind. 8 Werte), sonst im Sektor (mind. 10), sonst im ganzen Universum. Geschäftsmodelle, die Yahoo uneinheitlich einordnet, sind fest zugeordnet (<code>config/peer_overrides.json</code>), z.B. Uber, DoorDash, Airbnb, Booking, MercadoLibre → „Plattformen &amp; Marktplätze“.</li>
+      <li>Das normalisierte KGV fließt nur bei belegten Zyklikern in die Bewertung ein. Bei Firmen, die gerade profitabel werden, würden die Verlustjahre sonst zu Unrecht bestrafen.</li>
       <li>Value-Trap-Risiko: Bewertung 🟢, aber Umsatz rückläufig und Kurs mehr als 20 % im Minus (12-1M).</li>
     </ul>
     <h4>Stabilität &amp; Termine</h4>
@@ -445,7 +446,7 @@ function method() {
     <ul class="small">
       <li>US-Werte: bis 10 Geschäftsjahre aus den SEC-10-K-Berichten. Übrige: meist 4 Jahre aus den Yahoo-Jahresabschlüssen. EPS und Aktienzahl werden um spätere Aktiensplits bereinigt.</li>
       <li>ROIC = operatives Ergebnis × (1 − tatsächliche Steuerquote) / (Eigenkapital + Finanzschulden − liquide Mittel), Median über 5 Jahre. Ohne berichtete Steuerquote gibt es keinen ROIC.</li>
-      <li>Margen-Schwankung = Standardabweichung der operativen Marge über 5 Jahre (niedriger = stabiler). Cash Conversion = Summe FCF / Summe Gewinn über 5 Jahre.</li>
+      <li>Margen-Schwankung = Abweichung der operativen Marge <b>um ihren Trend</b> über 5 Jahre (niedriger = stabiler). Eine stetig steigende Marge gilt nicht als Schwankung, sondern zählt positiv als Margen-Trend. Krisenjahre werden für beide Werte auf −50 … +60 % begrenzt. Cash Conversion = Summe FCF / Summe Gewinn über 5 Jahre.</li>
       <li>Historisches KGV = Kurs am Geschäftsjahresende / verwässertes EPS, Median über 5 Jahre. Nur bei gleicher Kurs- und Bilanzwährung.</li>
       <li>Reverse-DCF: Das FCF-Wachstum über 10 Jahre, das den heutigen Unternehmenswert rechtfertigt (Kapitalkosten 9 %, danach 2,5 %). Niedriger = geringere Erwartungen im Kurs.</li>
       <li>Gewinnrevisionen: Veränderung der Konsens-EPS-Schätzung über 90 Tage und Saldo aus Anhebungen und Senkungen über 30 Tage.</li>
@@ -538,7 +539,8 @@ function openDetail(sym) {
   const hs = r.hist_source ? `${esc(r.hist_source)}, ${r.hist_years} Jahre` : "keine Mehrjahresdaten";
   const histRows = [
     M("ROIC (Median 5J)", "roic_med5", pctPlain(r.roic_med5)),
-    M("Operative Marge Ø 5J ± Schwankung", "op_margin_std", isNum(r.op_margin_avg5) ? `${pctPlain(r.op_margin_avg5)} ± ${pctPlain(r.op_margin_std)}` : dash, "op_margin_std", r.op_margin_avg5),
+    M("Margen-Trend 5J (Pp. p.a.)", "op_margin_trend", isNum(r.op_margin_trend) ? pctN(r.op_margin_trend) : dash),
+    M("Operative Marge Ø 5J ± Schwankung um den Trend", "op_margin_std", isNum(r.op_margin_avg5) ? `${pctPlain(r.op_margin_avg5)} ± ${pctPlain(r.op_margin_std)}` : dash, "op_margin_std", r.op_margin_avg5),
     M("Cash Conversion 5J (FCF/Gewinn)", "cash_conversion", fmt(r.cash_conversion, 2)),
     M("Aktienzahl p.a. (− = Rückkauf)", "share_cagr", pct(r.share_cagr)),
     M("Aktienvergütung / Umsatz", "sbc_rev", pctPlain(r.sbc_rev), null),

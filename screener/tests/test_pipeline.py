@@ -170,6 +170,11 @@ class RulesTest(unittest.TestCase):
 class PackageFourTest(unittest.TestCase):
     """Branchenvergleich, Hysterese, Zahlen-Warnung, normalisierte Zykliker, Digest."""
 
+    def test_peer_override(self):
+        # Yahoo führt Uber als Software; Vergleich muss mit Plattformen erfolgen
+        self.assertEqual(scoring.peer_group("Technology", "Software - Application", "UBER"), "Plattformen & Marktplätze")
+        self.assertEqual(scoring.peer_group("Technology", "Software - Application", "ADBE"), "Software & IT-Dienste")
+
     def test_peer_groups(self):
         self.assertEqual(scoring.peer_group("Technology", "Semiconductors"), "Halbleiter")
         self.assertEqual(scoring.peer_group("Technology", "Software - Infrastructure"), "Software & IT-Dienste")
@@ -303,6 +308,18 @@ class HistoryTest(unittest.TestCase):
         self.assertGreater(history.derive(ys)["max_rev_drop"], 0)
         ys[3]["revenue"] = ys[2]["revenue"] * 0.6
         self.assertAlmostEqual(history.derive(ys)["max_rev_drop"], -0.4, places=6)
+
+    def test_rising_margin_is_not_instability(self):
+        ys = self._years()
+        for i, y in enumerate(ys):   # Marge steigt stetig von -20 % auf +13 % (Uber-Muster)
+            y["op_income"] = y["revenue"] * (-0.20 + 0.055 * i)
+        h = history.derive(ys)
+        self.assertAlmostEqual(h["op_margin_std"], 0.0, places=9)   # kein Auf und Ab um den Trend
+        self.assertAlmostEqual(h["op_margin_trend"], 0.055, places=9)
+        ys[-2]["op_income"] = ys[-2]["revenue"] * -0.10              # echter Rückschlag
+        self.assertGreater(history.derive(ys)["op_margin_std"], 0.02)
+        ys[-5]["op_income"] = ys[-5]["revenue"] * -3.9               # Krisenjahr wird auf -50 % begrenzt
+        self.assertLess(history.derive(ys)["op_margin_trend"], 0.25)
 
     def test_missing_tax_gives_no_roic(self):
         ys = self._years()
