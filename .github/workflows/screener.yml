@@ -13,6 +13,10 @@ on:
         description: "Wochen-Digest jetzt verschicken (true/false)"
         required: false
         default: "false"
+      preview:
+        description: "Probelauf: Ergebnis nur in Branch screener-preview, nichts veröffentlichen (true/false)"
+        required: false
+        default: "false"
   push:
     branches: [main]
     paths: ["screener/web/**"]   # nur Oberfläche neu ausliefern, ohne Datenlauf
@@ -68,7 +72,7 @@ jobs:
           python -m screener.pipeline.run --state state --alarm-file alarm.md $ARGS
 
       - name: Wochen-Digest (freitags oder manuell) als Issue-Kommentar -> GitHub verschickt die E-Mail
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && github.event.inputs.preview != 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,7 +94,7 @@ jobs:
           gh issue comment "$NUM" --body-file digest.md
 
       - name: Datenqualitäts-Alarm als Issue-Kommentar (-> E-Mail)
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && github.event.inputs.preview != 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -111,7 +115,7 @@ jobs:
         run: python -m screener.pipeline.guard --old state_prev --new state
 
       - name: Wöchentliches Backup der unersetzlichen Daten (Branch screener-backup, mit Historie)
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && github.event.inputs.preview != 'true'
         continue-on-error: true
         run: |
           URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
@@ -133,7 +137,7 @@ jobs:
           git push -q "$URL" screener-backup
 
       - name: Datenstand sichern (ein Commit, ohne Historie -> Repo bleibt klein)
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && github.event.inputs.preview != 'true'
         run: |
           cd state
           git init -q -b screener-data
@@ -143,6 +147,18 @@ jobs:
           git push -f -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" screener-data
           rm -rf .git
 
+      - name: Probelauf sichern (Branch screener-preview, ohne Veröffentlichung)
+        if: github.event.inputs.preview == 'true'
+        run: |
+          mkdir -p preview && cp state/public/screener.json preview/
+          cp state/*.json preview/ 2>/dev/null || true
+          cd preview
+          git init -q -b screener-preview
+          git add -A
+          git -c user.name="screener-bot" -c user.email="actions@users.noreply.github.com" \
+            commit -qm "Probelauf $(date -u +%Y-%m-%dT%H:%MZ) ${{ github.ref_name }}"
+          git push -f -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" screener-preview
+
       - name: Website zusammenbauen
         run: |
           mkdir -p site
@@ -151,11 +167,13 @@ jobs:
           touch site/.nojekyll
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.event.inputs.preview != 'true'
         with:
           path: site
 
   deploy:
     needs: build
+    if: github.event.inputs.preview != 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

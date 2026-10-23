@@ -10,6 +10,16 @@ import datetime as dt
 import math
 
 FINANCIAL_SECTORS = {"Financial Services", "Financials"}
+# Nur echte Bilanz-Finanzierer werden wie Banken bewertet. Zahlungsnetzwerke (Visa, Mastercard), Ratingagenturen,
+# Datenanbieter und Börsen sind normale Unternehmen mit Cashflow, EBITDA und ROIC.
+BANK_LIKE_KEYWORDS = ("bank", "insurance", "mortgage", "capital markets", "financial conglomerates", "reinsurance")
+
+
+def is_bank_like(sector, industry, ebitda) -> bool:
+    if sector not in FINANCIAL_SECTORS:
+        return False
+    ind = industry.lower() if isinstance(industry, str) else ""
+    return any(k in ind for k in BANK_LIKE_KEYWORDS) or not ebitda
 REIT_SECTORS = {"Real Estate"}
 # Kennzahlen, die für die Branche wirtschaftlich ungeeignet sind -> [NICHT ANWENDBAR] statt "fehlt"
 NA_FINANCIAL = ["ev_ebitda", "fcf_yield", "fcf_margin", "net_debt_ebitda", "gross_margin",
@@ -115,6 +125,9 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
                 if m["pe_fwd"] and m["eps_growth_fwd"] and m["eps_growth_fwd"] > 0.01 else None)
 
     bvps = _num(info.get("bookValue"))
+    if bvps and price_fin and not 0.05 < price_fin / bvps < 100:
+        flags.append("kbv_unplausibel")   # z.B. Buchwert je A-Aktie bei Berkshire B-Aktie
+        bvps = None
     m["pb"] = checked_ratio("kbv", _div(price_fin, bvps) if bvps and bvps > 0 else None, "priceToBook", tol=0.25,
                             raw=_div(price, bvps))
 
@@ -123,7 +136,7 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
     fcf = _num(info.get("freeCashflow"))
     debt = _num(info.get("totalDebt"))
     cash = _num(info.get("totalCash"))
-    is_fin = info.get("sector") in FINANCIAL_SECTORS
+    is_fin = is_bank_like(info.get("sector"), info.get("industry"), ebitda)
     m["is_financial"] = is_fin
 
     ev = mcap_fin + (debt or 0) - (cash or 0) if mcap_fin and debt is not None and cash is not None else None
@@ -135,7 +148,18 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
         if m["ev_ebitda"] and m["ev_ebitda"] > 200:
             m["ev_ebitda"] = None
     m["ev_fin"] = ev if not is_fin else None
+    # ROIC-Schätzung aus den letzten 12 Monaten als Rückfall, wenn die Historie keinen ROIC liefert
+    # (z.B. fehlende Steuerquote). Annahme Steuerquote 21 % [SCHÄTZUNG]; investiertes Kapital =
+    # Eigenkapital + Finanzschulden - liquide Mittel (funktioniert auch bei negativem Eigenkapital)
+    op_m = _num(info.get("operatingMargins"))
+    ic = (bvps * shares + debt - cash) if (bvps is not None and shares and debt is not None and cash is not None) else None
+    m["roic_ttm_est"] = (op_m * revenue * 0.79 / ic
+                         if (not is_fin and op_m is not None and revenue and ic and ic > 0) else None)
+    if m["roic_ttm_est"] is not None and not -1 < m["roic_ttm_est"] < 2:
+        m["roic_ttm_est"] = None
     m["fcf_fin"] = fcf
+    m["ocf_fin"] = _num(info.get("operatingCashflow"))
+    m["revenue_fin"] = revenue
     m["fcf_yield"] = _div(fcf, mcap_fin) if not is_fin else None
     m["fcf_margin"] = _div(fcf, revenue) if (not is_fin and revenue and revenue > 0) else None
     m["net_debt_ebitda"] = ((debt - cash) / ebitda

@@ -22,6 +22,8 @@ const FLAG_TEXT = {
   zyklik_normalisiert: "Zyklische Branche mit möglichem Spitzengewinn – Bewertung daher über den normalisierten Gewinn (aktueller Umsatz × Median-Nettomarge 5 J.) statt über das aktuelle KGV",
   zahlen_in_kuerze: "Quartalszahlen in den nächsten 7 Tagen – Einstieg erst danach prüfen (Kurslücken-Risiko)",
   split_nach_bericht_bereinigt: "Aktiensplit nach dem letzten Jahresbericht – historische EPS/Aktienzahlen entsprechend bereinigt",
+  historie_je_aktie_unplausibel: "Je-Aktie-Werte der Historie passen nicht zu Yahoo (andere Aktiengattung/Einheit) – für die Bewertung verworfen",
+  kbv_unplausibel: "Buchwert je Aktie unplausibel (z.B. andere Aktiengattung) – KBV verworfen",
   value_trap_risiko: "Value-Trap-Risiko: billig bewertet, aber Umsatz rückläufig und Kurs im Abwärtstrend",
 };
 const AMPEL = { gruen: "🟢", gelb: "🟡", rot: "🔴", grau: "⚪" };
@@ -31,6 +33,7 @@ const AMPEL_KEYS = [["Qualität", "Q", "Unternehmensqualität"], ["Bewertung", "
 const ampelRow = (r) => `<span class="amp" title="${AMPEL_KEYS.map(([k, , l]) => `${l}: ${AMPEL_TXT[(r.ampeln || {})[k] || "grau"]}`).join("\n")}">${
   AMPEL_KEYS.map(([k]) => AMPEL[(r.ampeln || {})[k] || "grau"]).join("")}</span>`;
 const VERDICT_RANK = { kandidat: 7, beobachten: 6, beobachten_teuer: 5, neutral: 4, meiden_teuer: 3, meiden: 2, meiden_schwach: 1, nab: 0 };
+const SORT_DEFAULT_ASC = new Set(["symbol", "pe_fwd", "to_buy", "net_debt_ebitda", "zone"]);
 const verdictHtml = (r) => `<span class="verdict v-${esc(r.verdict_code)}">${esc(r.verdict)}</span>`;
 // Kennzeichnung nach Projekt-Regeln (Abschnitt 3.4)
 const TAG = {
@@ -41,6 +44,21 @@ const TAG = {
   roic_med5: "BERECHNET", op_margin_std: "BERECHNET", op_margin_trend: "BERECHNET", cash_conversion: "BERECHNET", share_cagr: "BERECHNET",
   rev_cagr: "BERECHNET", eps_cagr: "BERECHNET", pe_vs_hist: "BERECHNET", pe_norm: "BERECHNET", implied_growth: "BERECHNET aus SCHÄTZUNG",
   rev_eps_90d: "BERECHNET aus SCHÄTZUNG", rev_breadth: "BERECHNET aus SCHÄTZUNG", sbc_rev: "BERECHNET",
+};
+const Q_COMP_INFO = {
+  "Rentabilität": { how: "ROIC Median 5 J. (Banken: ROE). 6 % → 2,5 · 9 % → 4,5 · 12 % → 6 · 18 % → 8 · ≥ 30 % → 10",
+    value: (r) => r.is_financial ? `ROE 5J ${pctPlain(r.roe_med5)} · aktuell ${pctPlain(r.roe)}`
+      : `ROIC 5J ${pctPlain(r.roic_med5)}${!isNum(r.roic_med5) && isNum(r.roic_ttm_est) ? ` · Schätzung 12 M. ${pctPlain(r.roic_ttm_est)}` : ""}` },
+  "Margen": { how: "Operative Marge als Perzentil in der Vergleichsgruppe (Geschäftsmodell-abhängig)",
+    value: (r) => `operative Marge ${pctPlain(r.op_margin)} · Gruppe ${esc(r.peer_group || "")}` },
+  "Stabilität": { how: "Schwankung der Marge um ihren Trend: 1 Pp. → 10 · 3 → 8 · 5 → 6 · 8 → 3,5 · 12 → 1; −1,5 je Verlustjahr",
+    value: (r) => r.is_financial ? `ROE-Schwankung ${pctPlain(r.roe_std5)}` : `± ${pctPlain(r.op_margin_std)} um den Trend · ${isNum(r.loss_years5) ? r.loss_years5 : "?"} Verlustjahr(e) in 5 J.` },
+  "Gewinnqualität": { how: "Operativer Cashflow / Nettogewinn über 5 J.: 0,7 → 3 · 0,9 → 6 · 1,05 → 8,5 · ≥ 1,2 → 10",
+    value: (r) => `OCF/Gewinn ${fmt(r.ocf_conversion, 2)}` },
+  "Bilanz": { how: "Nettoverschuldung / EBITDA: Nettocash → 9,5–10 · 1x → 8 · 2x → 6 · 3x → 4 · 5x → 0",
+    value: (r) => `${fmt(r.net_debt_ebitda, 1)}x EBITDA` },
+  "Wachstum": { how: "Umsatz-CAGR 5 J.: 0 % → 3 · 4 % → 5 · 8 % → 6,5 · 12 % → 8 · 20 % → 9,5",
+    value: (r) => `Umsatz 5J ${pct(r.rev_cagr)} p.a. · aktuell ${pct(r.rev_growth)}` },
 };
 const ampelOf = (v) => !isNum(v) ? "grau" : v >= 6.5 ? "gruen" : v < 3.5 ? "rot" : "gelb";
 const flagText = (f) => f.startsWith("fundamentaldaten_vom_")
@@ -101,30 +119,31 @@ const zoneDist = (r) => {
   const z = r.buy_zones && r.buy_zones[0];
   return z ? r.price / z.high - 1 : null;
 };
+const V = (r, k) => (r.valuation || {})[k];
+const toBuyPrice = (r) => isNum(V(r, "buy_price")) ? r.price / V(r, "buy_price") - 1 : null;
 const COLS = [
   { k: "star", t: "", l: true, nosort: true, sticky: true, r: (r) => `<button class="star ${WATCH.has(r.symbol) ? "on" : ""}" data-star="${esc(r.symbol)}" aria-label="Watchlist">★</button>` },
   { k: "symbol", t: "Aktie", l: true, sticky: true, r: (r) => `<div class="name"><b>${esc(r.symbol)}</b><small title="${esc(r.name)}">${esc(r.name)}</small></div>` },
-  { k: "score", t: "Score", r: (r) => scoreBadge(r.score) + delta(r.score_chg_1w) },
-  { k: "ampeln", t: "Q B W D E", l: true, v: (r) => AMPEL_KEYS.filter(([k]) => (r.ampeln || {})[k] === "gruen").length, r: ampelRow },
+  { k: "score", t: "Gesamt", r: (r) => scoreBadge(r.score) + delta(r.score_chg_1w) },
+  { k: "q_score", t: "Qualität", r: (r) => scoreBadge(r.q_score) },
+  { k: "price_score", t: "Preis", r: (r) => scoreBadge(r.price_score) },
   { k: "verdict", t: "Urteil", l: true, v: (r) => VERDICT_RANK[r.verdict_code] ?? -1, r: verdictHtml },
-  { k: "sector", t: "Sektor", l: true, r: (r) => `<span class="small">${esc(r.sector || "—")}</span>` },
   { k: "price", t: "Kurs", n: true, r: (r) => money(r.price, r.currency) },
-  { k: "ret_1m", t: "1M", n: true, r: (r) => pct(r.ret_1m) },
-  { k: "ret_12m", t: "12M", n: true, r: (r) => pct(r.ret_12m) },
+  { k: "fv", t: "Fairer Wert", n: true, v: (r) => V(r, "fair_value"), r: (r) => money(V(r, "fair_value"), "") },
+  { k: "upside", t: "Potenzial", n: true, v: (r) => V(r, "upside"), r: (r) => pct(V(r, "upside"), 0) },
+  { k: "buy", t: "Kaufkurs", n: true, v: (r) => V(r, "buy_price"), r: (r) => money(V(r, "buy_price"), "") },
+  { k: "to_buy", t: "Kurs vs. Kaufkurs", n: true, v: toBuyPrice,
+    r: (r) => { const d = toBuyPrice(r); return !isNum(d) ? dash : d <= 0 ? '<span class="tag zone">IM KAUFBEREICH</span>' : `<span class="small">+${F[0].format(d * 100)} %</span>`; } },
+  { k: "conf", t: "Belastb.", l: true, v: (r) => ({ hoch: 3, mittel: 2, niedrig: 1 })[V(r, "confidence")] || 0, r: (r) => `<span class="small">${esc(V(r, "confidence") || "—")}</span>` },
+  { k: "ampeln", t: "Q B W D E", l: true, v: (r) => AMPEL_KEYS.filter(([k]) => (r.ampeln || {})[k] === "gruen").length, r: ampelRow },
+  { k: "peer_group", t: "Gruppe", l: true, r: (r) => `<span class="small">${esc(r.peer_group || r.sector || "—")}</span>` },
   { k: "pe_fwd", t: "KGV fwd", n: true, r: (r) => fmt(r.pe_fwd) },
-  { k: "peg", t: "PEG", n: true, r: (r) => fmt(r.peg, 2) },
-  { k: "ev_ebitda", t: "EV/EBITDA", n: true, r: (r) => fmt(r.ev_ebitda) },
-  { k: "fcf_yield", t: "FCF-Rend.", n: true, r: (r) => pctPlain(r.fcf_yield) },
   { k: "roic_med5", t: "ROIC 5J", n: true, r: (r) => pctPlain(r.roic_med5) },
-  { k: "roe", t: "EKR", n: true, r: (r) => pctPlain(r.roe) },
   { k: "op_margin", t: "Op. Marge", n: true, r: (r) => pctPlain(r.op_margin) },
-  { k: "rev_growth", t: "Umsatz Δ", n: true, r: (r) => pct(r.rev_growth) },
   { k: "rev_cagr", t: "Umsatz 5J", n: true, r: (r) => pct(r.rev_cagr) },
-  { k: "pe_vs_hist", t: "KGV/Hist", n: true, r: (r) => pctN(r.pe_vs_hist, 0) },
-  { k: "rev_eps_90d", t: "Rev. 90T", n: true, r: (r) => pct(r.rev_eps_90d) },
+  { k: "net_debt_ebitda", t: "Netto-Schulden/EBITDA", n: true, r: (r) => fmt(r.net_debt_ebitda, 1) },
   { k: "div_yield", t: "Div.", n: true, r: (r) => pctPlain(r.div_yield) },
-  { k: "analyst_upside", t: "Analysten", n: true, r: (r) => pct(r.analyst_upside) },
-  { k: "zone", t: "Buy-Zone", n: true, v: zoneDist, r: (r) => r.in_buy_zone ? '<span class="tag zone">IN ZONE</span>' : pct(zoneDist(r), 1, false) },
+  { k: "ret_12m", t: "12M", n: true, r: (r) => pct(r.ret_12m) },
   { k: "trend", t: "Trend", l: true, r: (r) => `<span class="small">${esc(r.trend)}</span>` },
   { k: "market_cap_eur", t: "MCap €", n: true, r: (r) => bn(r.market_cap_eur) },
   { k: "flags", t: "Daten", l: true, v: (r) => warnFlags(r).length, r: (r) => dataCell(r) },
@@ -138,17 +157,16 @@ function dataCell(r) {
 
 /* ---------- Presets ---------- */
 const PRESETS = [
-  { id: "kandidat", label: "Kandidaten für Einzelanalyse", f: (r) => r.verdict_code === "kandidat" },
-  { id: "garp", label: "Qualität 🟢 + Bewertung 🟢", f: (r) => r.ampeln?.["Qualität"] === "gruen" && r.ampeln?.["Bewertung"] === "gruen" && r.verdict_code !== "nab" },
-  { id: "zone", label: "Kandidat/Beobachten in Buy-Zone", f: (r) => ["kandidat", "beobachten"].includes(r.verdict_code) && r.in_buy_zone },
-  { id: "teuer", label: "Gutes Unternehmen, zu teuer", f: (r) => r.verdict_code === "beobachten_teuer" },
-  { id: "dip", label: "Qualität im Rücksetzer", f: (r) => r.ampeln?.["Qualität"] === "gruen" && r.ampeln?.["Bewertung"] !== "rot" && r.verdict_code !== "nab" && (r.dist_sma200 < 0 || r.rsi14 < 35) },
-  { id: "div", label: "Dividenden-Qualität", f: (r) => r.div_yield >= 0.03 && r.ampeln?.["Qualität"] !== "rot" && r.pillars["Qualität"] >= 6 && (r.payout == null || r.payout < 0.8) },
-  { id: "growth", label: "Wachstum vernünftig bewertet", f: (r) => r.rev_growth >= 0.12 && r.peg > 0 && r.peg < 1.5 && r.ampeln?.["Qualität"] !== "rot" },
+  { id: "kandidat", label: "Gute Aktien im Kaufbereich", f: (r) => r.verdict_code === "kandidat" },
+  { id: "nahe", label: "Gute Aktien ≤ 10 % über Kaufkurs", f: (r) => r.q_score >= 7 && isNum(toBuyPrice(r)) && toBuyPrice(r) > 0 && toBuyPrice(r) <= 0.10 },
+  { id: "top", label: "Top-Qualität (≥ 8,5)", f: (r) => r.q_score >= 8.5 },
+  { id: "guenstig", label: "Solide & günstig (Q ≥ 5, Potenzial ≥ 20 %)", f: (r) => r.q_score >= 5 && V(r, "upside") >= 0.20 && V(r, "confidence") !== "niedrig" },
+  { id: "teuer", label: "Gut, aber zu teuer – Kaufkurs merken", f: (r) => r.verdict_code === "beobachten_teuer" },
   { id: "compounder", label: "Compounder (ROIC, Wachstum, keine Verwässerung)", f: (r) => r.roic_med5 >= 0.15 && r.rev_cagr >= 0.08 && (r.share_cagr == null || r.share_cagr <= 0.005) && r.op_margin_std != null && r.op_margin_std < 0.05 },
-  { id: "revs", label: "Positive Revisionen + Qualität", f: (r) => r.rev_eps_90d >= 0.03 && r.rev_breadth > 0 && r.ampeln?.["Qualität"] === "gruen" },
-  { id: "hist", label: "Unter eigener Bewertungshistorie", f: (r) => r.pe_vs_hist <= -0.2 && r.ampeln?.["Qualität"] !== "rot" && !(r.flags || []).includes("zyklik_spitzengewinn") },
-  { id: "warn", label: "Zykliker-/Value-Trap-Warnung", f: (r) => (r.flags || []).some((f) => f === "zyklik_spitzengewinn" || f === "zyklik_normalisiert" || f === "value_trap_risiko") },
+  { id: "div", label: "Dividenden-Qualität", f: (r) => r.div_yield >= 0.03 && r.q_score >= 6 && (r.payout == null || r.payout < 0.8) },
+  { id: "revs", label: "Positive Revisionen + Qualität", f: (r) => r.rev_eps_90d >= 0.03 && r.rev_breadth > 0 && r.q_score >= 7 },
+  { id: "dip", label: "Qualität im Rücksetzer (unter SMA200)", f: (r) => r.q_score >= 7 && r.dist_sma200 < 0 },
+  { id: "warn", label: "Value-Falle / Zykliker-Warnung", f: (r) => (r.flags || []).some((f) => f === "zyklik_spitzengewinn" || f === "zyklik_normalisiert" || f === "value_trap_risiko") },
   { id: "soon", label: "Zahlen in ≤ 7 Tagen", f: (r) => (r.flags || []).includes("zahlen_in_kuerze") },
   { id: "risers", label: "Score-Aufsteiger", f: (r) => r.score_chg_1w >= 0.8 },
 ];
@@ -199,15 +217,15 @@ function kpis() {
   const m = DATA.meta;
   const rated = ROWS.filter((r) => isNum(r.score));
   const cnt = (c) => ROWS.filter((r) => r.verdict_code === c).length;
-  const zone = ROWS.filter((r) => ["kandidat", "beobachten"].includes(r.verdict_code) && r.in_buy_zone).length;
+  const near = ROWS.filter((r) => r.q_score >= 7 && isNum(toBuyPrice(r)) && toBuyPrice(r) > 0 && toBuyPrice(r) <= 0.10).length;
   const sec = m.sec_status || {};
   const secOk = (sec.bestaetigt || 0) + (sec.bestaetigt_split || 0), secAll = Object.values(sec).reduce((a, b) => a + b, 0);
   $("#kpis").innerHTML = [
     ["Universum", m.universe, `${m.rows} mit Daten · ${rated.length} mit Score`],
-    ["Kandidaten", cnt("kandidat"), "für Einzelanalyse", "kandidat"],
-    ["In Buy-Zone", zone, "Kandidat/Beobachten, Kurs in Zone 1", "zone"],
-    ["Gut, aber zu teuer", cnt("beobachten_teuer"), "Qualität 🟢, Bewertung 🔴", "teuer"],
-    ["Nicht beurteilbar", cnt("nab"), "Datenlage unzureichend"],
+    ["Im Kaufbereich", cnt("kandidat"), "Qualität ≥ 7, Kurs ≤ Kaufkurs", "kandidat"],
+    ["Nahe Kaufbereich", near, "Qualität ≥ 7, ≤ 10 % über Kaufkurs", "nahe"],
+    ["Top-Qualität", ROWS.filter((r) => r.q_score >= 8.5).length, "Qualität ≥ 8,5", "top"],
+    ["Gut, aber zu teuer", cnt("beobachten_teuer"), "Kaufkurs merken", "teuer"],
     ["SEC-geprüft", secAll ? `${secOk}/${secAll}` : "–", "US-Gewinn & EPS bestätigt"],
   ].map(([t, v, s, p]) => `<div class="kpi" ${p ? `data-preset="${p}"` : ""}><span>${t}</span><b>${v}</b><small>${s}</small></div>`).join("");
   document.querySelectorAll(".kpi[data-preset]").forEach((k) => k.onclick = () => setPreset(k.dataset.preset));
@@ -304,7 +322,7 @@ function head(tbl) {
   tbl.querySelectorAll("th").forEach((th) => th.onclick = () => {
     const c = COLS.find((x) => x.k === th.dataset.k);
     if (c.nosort) return;
-    SORT = { key: c.k, asc: SORT.key === c.k ? !SORT.asc : (c.k === "symbol" || c.k === "pe_fwd" || c.k === "peg" || c.k === "ev_ebitda" || c.k === "zone") };
+    SORT = { key: c.k, asc: SORT.key === c.k ? !SORT.asc : SORT_DEFAULT_ASC.has(c.k) };
     render(); renderWatch();
   });
 }
@@ -406,65 +424,55 @@ function method() {
     <dl class="kv">${Object.entries(m.sources).map(([k, v]) => `<dt>${esc(k)}</dt><dd style="font-family:var(--sans)">${esc(v)}</dd>`).join("")}</dl>
     <h4>Devisenkurse (1 Einheit → EUR)</h4>
     <dl class="kv">${Object.entries(m.fx_to_eur).filter(([k]) => k !== "GBp").map(([k, v]) => `<dt>${esc(k)}</dt><dd>${F[2].format(v)}</dd>`).join("")}</dl>`;
-  $("#method-panel").innerHTML = `<h3>Methodik (nach Projekt „Aktienanalyse“)</h3>
-    <p class="small">Der Screener trennt konsequent: <b>gutes Unternehmen</b> (Qualität), <b>attraktive Bewertung</b>,
-    <b>Datenqualität</b> und <b>Einstiegszeitpunkt</b> (Chart). Jede Säule hat eine eigene Ampel. Grüne Ampeln werden nicht addiert.</p>
-    <h4>Score 1–10</h4>
-    <p class="small">Jede Kennzahl wird <b>innerhalb ihres Sektors</b> als Perzentil gemessen (keine universellen Schwellen).
-    Der Score ist das gewichtete Mittel aus Qualität, Bewertung, Wachstum und Gewinnrevisionen, über das Universum auf 1–10 skaliert.
-    <b>Rote Ampeln deckeln den Score:</b> Qualität 🔴 → max. 4, Bewertung 🔴 → max. 6, Value-Trap-Risiko → max. 6.
-    Trend und Analysten fließen <b>nicht</b> in den Score ein. Analystenziele dienen nur zum Vergleich.</p>
-    ${Object.entries(m.pillars).map(([n, p]) => `<h4>${esc(n)} · ${p.in_score ? `Gewicht ${F[0].format(p.weight * 100)} %` : "nicht im Score"}</h4>
-      <div class="small">${p.metrics.map(([, l, hb]) => `${esc(l)} <span class="muted">(${hb ? "höher besser" : "niedriger besser"})</span>`).join(" · ")}</div>`).join("")}
-    <h4>Ampeln</h4>
-    <p class="small">🟢 Säule ≥ 6,5 · 🟡 3,5–6,5 · 🔴 &lt; 3,5 · ⚪ unbekannt. Datenqualität 🔴 bei Abdeckung &lt; 60 %, SEC-Abweichung oder ohne aktuellen Kurs.
-    Einstieg 🟢 in Buy-Zone oder intaktem Aufwärtstrend nahe SMA200, 🔴 im Abwärtstrend ohne Unterstützung.</p>
-    <h4>Urteile</h4>
+  $("#method-panel").innerHTML = `<h3>Methodik (Modell 2) · Ziel: gute Aktien zu einem interessanten Kaufkurs</h3>
+    <p class="small">Jede Aktie bekommt drei Zahlen: <b>Qualität</b> (Ist das ein gutes Unternehmen?), <b>Preis</b> (Ist der Kurs attraktiv gemessen am fairen Wert?)
+    und daraus den <b>Gesamtscore</b>. Alle drei stehen auf einer <b>absoluten Skala</b>. Ein Score von 8 heißt „gut“, nicht „besser als 80 % der anderen“.
+    Es gibt keine erzwungene Verteilung. Sind viele Aktien gut oder alle teuer, zeigt der Screener das auch so an.</p>
+    <h4>1 · Qualität 0–10</h4>
+    <table class="metrics">${Object.entries(Q_COMP_INFO).map(([k, i]) => `<tr><td>${k}</td><td class="l small" style="white-space:normal">${esc(i.how)}</td></tr>`).join("")}</table>
+    <p class="small">Gewichte: Rentabilität 30 %, Margen 15 %, Stabilität 15 %, Gewinnqualität 10 %, Bilanz 15 %, Wachstum 15 %.
+    Banken und Versicherer: ROE 45 %, Stabilität 30 %, Wachstum 25 %.
+    Zu- und Abschläge: Verwässerung über 2 % bzw. 4 % p.a. (−0,7 / −1,5), Rückkäufe über 2 % (+0,3), Marge steigt bzw. fällt um mehr als 2 Pp. p.a. (+0,5 / −0,7), aktuell Verlust (−1).
+    Als „Bank-ähnlich“ gelten nur Banken, Versicherer, Broker und Hypothekenfinanzierer. Visa, Mastercard, Ratingagenturen und Börsen werden normal bewertet.</p>
+    <h4>2 · Fairer Wert je Aktie</h4>
     <ul class="small">
-      <li><b>Kandidat für Einzelanalyse</b>: Score ≥ 8, Qualität 🟢, Bewertung und Wachstum nicht 🔴, keine Zykliker-/Value-Trap-Warnung. Ein Screener spricht kein „Kaufen“ aus. Das gibt es erst nach der Einzelanalyse.</li>
-      <li><b>Beobachten</b>: interessant, aber nicht eindeutig. <b>Beobachten – gutes Unternehmen, zu teuer</b>: Qualität 🟢, Bewertung 🔴.</li>
-      <li><b>Meiden – zu teuer</b> unterscheidet sich von <b>Meiden – wirtschaftlich schwach</b> (Qualität 🔴). <b>Meiden</b> ohne Zusatz gilt bei Wachstum 🔴 oder Score &lt; 3.</li>
-      <li><b>Kein Vorteil erkennbar</b>: keine rote Ampel, aber auch kein Hinweis auf eine Fehlbewertung.</li>
-      <li><b>Nicht ausreichend beurteilbar</b>: zu wenige oder widersprüchliche Daten. Dann wird kein Urteil erzwungen.</li>
+      <li><b>DCF auf die Ertragskraft:</b> Basis sind die Owner Earnings des letzten Geschäftsjahres aus den geprüften Abschlüssen, abzüglich Aktienvergütung.
+        War das letzte Jahr ein Ausreißer nach unten (unter 60 % der 5-Jahres-Median-Marge, z.B. Vergleichszahlungen), zählt das Mittel aus beiden.
+        Nur ohne Mehrjahresdaten wird Yahoos FCF der letzten 12 Monate genutzt.
+        Owner Earnings = operativer Cashflow − min(Investitionen, Abschreibungen). Investitionen über den Abschreibungen gelten als Wachstum, nicht als Erhalt.
+        Deshalb werden Unternehmen in Investitionsphasen (z.B. KI-Rechenzentren) nicht als „teuer“ abgestraft.</li>
+      <li>Wachstum Jahre 1–5 = <b>Median</b> aus Umsatz-CAGR (der niedrigere Wert aus 5 und bis zu 10 Jahren, damit der Corona-Basiseffekt nicht zählt), aktuellem Umsatzwachstum und Konsens-Gewinnwachstum (−3 … +15 %). Ab Jahr 6 läuft es linear auf 3 % aus, danach 2,5 % dauerhaft.
+        Liegen die drei Werte mehr als 15 Prozentpunkte auseinander, sinkt die Belastbarkeit um eine Stufe.</li>
+      <li>Diskontsatz nach CAPM: 4,3 % + Beta × 4,5 %. Das Beta wird nach Blume geglättet (0,67 × Beta + 0,33) und auf 0,8–1,6 begrenzt, also 7,9–11,5 %.
+        Zuschläge: +1 % bei Verschuldung über 3× EBITDA, +1 % bei schwankenden Margen oder Verlustjahren.</li>
+      <li><b>Gewinn × faires KGV:</b> Konsens-EPS des nächsten Geschäftsjahres × faires KGV. Das faire KGV ist zur Hälfte das eigene 5-Jahres-Median-KGV und zur Hälfte ein wachstumsgerechtes KGV (12 + Wachstum in %; geeicht am Markt: rund 22× bei 10 % Wachstum).
+        Ohne eigene Historie gilt nur das wachstumsgerechte KGV. Begrenzt auf 10–30.</li>
+      <li><b>Banken und Versicherer:</b> Buchwert × gerechtfertigtes KBV = (ROE − 3 %) / (10 % − 3 %). <b>REITs:</b> Dividendenmodell, grob.</li>
+      <li><b>Belegte Zykliker:</b> normalisierte Marge (Median 5 J.) × aktueller Umsatz. Ohne Mehrjahresdaten gibt es keinen fairen Wert.</li>
+      <li>Fairer Wert = Mittel der Methoden. <b>Belastbarkeit</b>: hoch, wenn die Methoden höchstens 30 % auseinanderliegen, mittel bis 80 %, sonst niedrig.
+        Eine Stufe tiefer bei widersprüchlichem Wachstum oder wenn der faire Wert mehr als 60 % über dem Kurs liegt: Dann preist der Markt meist ein Risiko ein, das die Vergangenheitszahlen nicht zeigen (Disruption, Klagen, Zyklus).
+        Ist das Konsens-EPS unplausibel, zählt nur der DCF. Über +150 % Potenzial wird nicht bewertet (fast immer Datenfehler oder Sondersituation).
+        „Kandidat“ setzt mindestens mittlere Belastbarkeit voraus; sonst „Beobachten“.</li>
     </ul>
-    <h4>Branchenregeln</h4>
+    <h4>3 · Kaufkurs und Preis-Score</h4>
+    <p class="small">Kaufkurs = fairer Wert × (1 − Sicherheitsmarge). Die Sicherheitsmarge beträgt 10 % bei Qualität ≥ 7,5, 20 % bei Qualität ≥ 6, sonst 30 %; +10 % bei niedriger Belastbarkeit.
+    Preis-Score aus dem Potenzial zum fairen Wert: −50 % → 0 · −25 % → 2 · 0 % → 4,5 · +15 % → 6 · +30 % → 7,5 · +50 % → 9 · ≥ +75 % → 10.
+    Bei niedriger Belastbarkeit wird er zur Mitte (4,5) hin halbiert.</p>
+    <h4>4 · Gesamtscore und Urteil</h4>
+    <p class="small">Gesamt = 55 % Qualität + 45 % Preis, ±0,3 bei deutlichen Gewinnrevisionen. Bei Qualität unter 4 ist der Gesamtscore höchstens 4,5: Schwache Qualität wird durch einen niedrigen Preis nicht ausgeglichen.</p>
     <ul class="small">
-      <li>Banken/Versicherer: EV/EBITDA, FCF und Bruttomarge [NICHT ANWENDBAR]. Stattdessen KBV und Gesamtkapitalrendite.</li>
-      <li>REITs: KGV und Gewinnwachstum [NICHT ANWENDBAR] (FFO/AFFO nötig, nicht frei verfügbar). Kein KGV-Kursziel.</li>
-      <li>Zykliker (Energie, Rohstoffe, Halbleiter, Auto, Chemie …): Energie und Rohstoffe gelten immer als zyklisch. Bei übrigen zyklischen Branchen (Halbleiter, Auto, Chemie …) hebt erst eine Historie von mindestens 5 Jahren ohne Umsatzeinbruch ≥ 15 % die Zykliker-Vermutung auf. Dann gilt ein Margenanstieg als strukturell. Bei Gewinnsprung &gt; 40 %, KGV &lt; 60 % des Sektormedians oder operativer Marge &gt; 150 % des eigenen 5-Jahres-Schnitts gilt dann „möglicher Spitzengewinn“. Mit Mehrjahresdaten wird dann über den <b>normalisierten Gewinn</b> bewertet (aktueller Umsatz × Median-Nettomarge 5 J.; so bleibt echtes Wachstum erhalten). KGV, EV/EBITDA, FCF-Rendite und Reverse-DCF zählen dann nicht, weil sie auf Spitzengewinnen beruhen. Kursziel = normalisiertes EPS × eigenes Median-KGV 5 J. Ohne Mehrjahresdaten zählt die Bewertung höchstens neutral, und es gibt kein Kursziel.</li>
-      <li>Vergleich: zuerst innerhalb der Branchengruppe (z.B. Halbleiter, Software, Banken; mind. 8 Werte), sonst im Sektor (mind. 10), sonst im ganzen Universum. Geschäftsmodelle, die Yahoo uneinheitlich einordnet, sind fest zugeordnet (<code>config/peer_overrides.json</code>), z.B. Uber, DoorDash, Airbnb, Booking, MercadoLibre → „Plattformen &amp; Marktplätze“.</li>
-      <li>Das normalisierte KGV fließt nur bei belegten Zyklikern in die Bewertung ein. Bei Firmen, die gerade profitabel werden, würden die Verlustjahre sonst zu Unrecht bestrafen.</li>
-      <li>Value-Trap-Risiko: Bewertung 🟢, aber Umsatz rückläufig und Kurs mehr als 20 % im Minus (12-1M).</li>
+      <li><b>Gutes Unternehmen im Kaufbereich</b>: Qualität ≥ 7 und Kurs ≤ Kaufkurs. Ein Kandidat bleibt Kandidat, bis der Kurs mehr als 5 % über dem Kaufkurs liegt.</li>
+      <li><b>Gutes Unternehmen – nahe Kaufbereich / auf Kaufkurs warten</b>: Qualität ≥ 7, Kurs unter bzw. über dem fairen Wert. Der Kaufkurs steht dabei.</li>
+      <li><b>Solide Qualität</b> (5–7): günstig, fair oder zu teuer bewertet. <b>Schwache Qualität</b> (&lt; 5): meiden. Ist sie niedrig bewertet, gilt der Hinweis „Value-Falle möglich“.</li>
+      <li>Der Chart (Trend, Buy-Zonen) und der Analysten-Konsens fließen <b>nicht</b> in den Score ein. Sie dienen der Einordnung.</li>
     </ul>
-    <h4>Stabilität &amp; Termine</h4>
+    <h4>Daten und Grenzen</h4>
     <ul class="small">
-      <li>Hysterese: Kandidat wird eine Aktie ab Score 8,0, sie bleibt es bis unter 7,5. „Beobachten“ gilt ab 5,5, gehalten bis unter 5,0. Das verhindert tägliches Hin- und Herspringen.</li>
-      <li>Quartalszahlen in den nächsten 7 Tagen: Die Einstiegs-Ampel ist höchstens 🟡, das Urteil bekommt einen Hinweis.</li>
-      <li>Wochen-Digest: jeden Freitag nach dem Datenlauf als Kommentar im GitHub-Issue „📬 Screener-Digest“. GitHub verschickt die E-Mail. Die Watchlist dafür steht in <code>screener/config/watchlist.json</code>.</li>
+      <li>[IST] veröffentlichte Zahl · [BERECHNET] eigene Rechnung · [SCHÄTZUNG] Konsens oder Annahme · [UNBEKANNT] · [NICHT ANWENDBAR]. Kein Wert wird erfunden oder aufgefüllt.</li>
+      <li>US-Werte: bis 10 Jahre aus den SEC-10-K-Berichten, Gewinn und EPS gegen den 10-K geprüft. Übrige: 4 Jahre aus Yahoo. Splits und Einheitenfehler werden bereinigt.</li>
+      <li>Ein DCF ist empfindlich: 1 Prozentpunkt Wachstum oder Diskontsatz ändert den fairen Wert um 10–25 %. Deshalb gibt es Spanne, Belastbarkeit und Sicherheitsmarge.</li>
     </ul>
-    <h4>Mehrjahres-Daten</h4>
-    <ul class="small">
-      <li>US-Werte: bis 10 Geschäftsjahre aus den SEC-10-K-Berichten. Übrige: meist 4 Jahre aus den Yahoo-Jahresabschlüssen. EPS und Aktienzahl werden um spätere Aktiensplits bereinigt.</li>
-      <li>ROIC = operatives Ergebnis × (1 − tatsächliche Steuerquote) / (Eigenkapital + Finanzschulden − liquide Mittel), Median über 5 Jahre. Ohne berichtete Steuerquote gibt es keinen ROIC.</li>
-      <li>Margen-Schwankung = Abweichung der operativen Marge <b>um ihren Trend</b> über 5 Jahre (niedriger = stabiler). Eine stetig steigende Marge gilt nicht als Schwankung, sondern zählt positiv als Margen-Trend. Krisenjahre werden für beide Werte auf −50 … +60 % begrenzt. Cash Conversion = Summe FCF / Summe Gewinn über 5 Jahre.</li>
-      <li>Historisches KGV = Kurs am Geschäftsjahresende / verwässertes EPS, Median über 5 Jahre. Nur bei gleicher Kurs- und Bilanzwährung.</li>
-      <li>Reverse-DCF: Das FCF-Wachstum über 10 Jahre, das den heutigen Unternehmenswert rechtfertigt (Kapitalkosten 9 %, danach 2,5 %). Niedriger = geringere Erwartungen im Kurs.</li>
-      <li>Gewinnrevisionen: Veränderung der Konsens-EPS-Schätzung über 90 Tage und Saldo aus Anhebungen und Senkungen über 30 Tage.</li>
-      <li>Diese Zusatzkennzahlen zählen nicht in die Datenabdeckung. Fehlen sie (häufig bei Auslandswerten), entfällt nur ihr Gewicht.</li>
-    </ul>
-    <h4>Daten und Kennzeichnung</h4>
-    <ul class="small">
-      <li>[IST] veröffentlichte Zahl · [BERECHNET] eigene Rechnung aus belegten Werten · [BERECHNET aus SCHÄTZUNG] mit Konsensschätzung · [UNBEKANNT] nicht verfügbar · [NICHT ANWENDBAR] für die Branche ungeeignet.</li>
-      <li>Kein Wert wird geschätzt oder aufgefüllt. KGV, KBV und EV/EBITDA werden selbst berechnet (Währung angeglichen) und mit Yahoo abgeglichen. Bei Widerspruch wird der Wert verworfen.</li>
-      <li>US-Werte: Nettogewinn und EPS werden gegen den 10-K bei der SEC geprüft (Toleranz 5 %, nachträgliche Aktiensplits werden erkannt).</li>
-      <li>Ist der letzte Kurs älter als 5 Tage, gibt es kein kursbezogenes Urteil, keine Buy-Zone und kein Potenzial.</li>
-    </ul>
-    <h4>Modell-Bewertung</h4>
-    <p class="small">Forward-EPS × faires KGV (Mittel aus eigenem und Sektor-KGV, Neubewertung max. ±25 %).
-    Die Szenarien unterscheiden sich in den operativen Annahmen: Bear mit Wachstum −10 Pp. und KGV ×0,8, Base mit Konsenswachstum, Bull mit Wachstum +5 Pp. und KGV ×1,15.
-    Angezeigt werden der faire Wert heute, die Sicherheitsmarge = (fairer Wert − Kurs) / fairer Wert und das Potenzial = fairer Wert / Kurs − 1.
-    Die Rendite über 3 Jahre enthält Dividenden ohne Wiederanlage. Das Modell ersetzt keine DCF-Einzelanalyse.</p>
-    <p class="note">Keine Anlageberatung. Der Screener ist ein Filter, um Ideen zu finden. Die Einzelanalyse ersetzt er nicht.</p>`;
+    <p class="note">Keine Anlageberatung. Der Screener filtert Ideen, die Kaufentscheidung fällt in der Einzelanalyse.</p>`;
 }
 
 /* ---------- Detailansicht ---------- */
@@ -486,7 +494,10 @@ function peerTable(r) {
   if (!peers.length) return '<div class="note">Keine vergleichbaren Werte in der Branchengruppe.</div>';
   const cols = [r, ...peers];
   const rows = [
-    ["Score", (x) => scoreBadge(x.score)], ["Ampeln Q B W D E", (x) => ampelRow(x)],
+    ["Gesamt", (x) => scoreBadge(x.score)], ["Qualität", (x) => scoreBadge(x.q_score)], ["Preis", (x) => scoreBadge(x.price_score)],
+    ["Fairer Wert / Potenzial", (x) => isNum(V(x, "fair_value")) ? `${money(V(x, "fair_value"), "")}<br><span class="small">${pctN(V(x, "upside"), 0)}</span>` : dash],
+    ["Kaufkurs", (x) => money(V(x, "buy_price"), x.currency)],
+    ["Ampeln Q B W D E", (x) => ampelRow(x)],
     ["Urteil", (x) => `<span class="small peer-verdict">${esc(x.verdict)}</span>`],
     ["KGV fwd", (x) => fmt(x.pe_fwd)], ["KGV normalisiert", (x) => fmt(x.pe_norm)], ["KGV vs. eigener 5J-Median", (x) => pctN(x.pe_vs_hist, 0)],
     ["EV/EBITDA", (x) => fmt(x.ev_ebitda)], ["FCF-Rendite", (x) => pctPlain(x.fcf_yield)],
@@ -513,7 +524,6 @@ function openDetail(sym) {
   if (!r) return;
   if (location.hash.slice(1) !== encodeURIComponent(sym)) history.pushState(null, "", "#" + encodeURIComponent(sym));
   const m = DATA.meta;
-  const t = r.targets;
   const flags = r.flags || [];
   const stale = flags.includes("kurs_veraltet");
   const na = new Set(r.not_applicable || []);
@@ -575,27 +585,42 @@ function openDetail(sym) {
       : "⚠ Gewinn oder EPS weichen > 5 % ab – Yahoo-Werte mit Vorsicht"} · geprüft ${esc(sec.checked)} · <a href="${esc(sec.url)}" target="_blank" rel="noopener">Filings</a></div>`
     : `<div class="note">SEC: ${esc(sec.status.replace(/_/g, " "))} (geprüft ${esc(sec.checked)})</div>`;
   const a = r.ampeln || {};
-  const pv = (n) => isNum(r.pillars[n]) ? F[1].format(r.pillars[n]) : "—";
-  const ampelDetail = [
-    ["Unternehmensqualität", "Qualität", `Säule ${pv("Qualität")}`],
-    ["Bewertung", "Bewertung", `Säule ${pv("Bewertung")}`],
-    ["Wachstum", "Wachstum", `Säule ${pv("Wachstum")}`],
-    ["Gewinnrevisionen", "_rev", `Säule ${pv("Revisionen")}`],
-    ["Datenqualität", "Daten", (r.data_why || []).join(", ")],
-    ["Einstieg (Chart)", "Einstieg", `${esc(r.trend)}${r.in_buy_zone ? " · in Buy-Zone" : ""} · Trend-Säule ${pv("Trend")} (nicht im Score)`],
-  ].map(([l, k, d]) => `<tr><td>${AMPEL[k === "_rev" ? ampelOf(r.pillars["Revisionen"]) : a[k] || "grau"]} ${l}</td><td class="l small">${d}</td></tr>`).join("");
+  const v = r.valuation || {};
   const nextDate = r.earnings_date ? new Date(r.earnings_date).toLocaleDateString("de-DE") : null;
   const priceTime = r.price_time ? new Date(r.price_time).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : null;
   const eurNote = r.currency !== "EUR" && isNum(r.price_eur)
     ? ` · ≈ ${money(r.price_eur, "EUR")} <span class="muted">(Umrechnung ${fmt(m.fx_to_eur[r.currency], 4)} – kein ausführbarer EUR-Kurs)</span>` : "";
-  const noModel = r.is_reit ? "KGV-Modell nicht anwendbar (REIT: FFO/AFFO nötig)."
-    : flags.includes("zyklik_spitzengewinn") ? "Möglicher zyklischer Spitzengewinn: Ein KGV-Modell wäre irreführend, nötig sind normalisierte Gewinne (Einzelanalyse)."
-    : stale ? "Kein aktueller Referenzkurs, daher kein Potenzial ausweisbar."
-    : "Kein positiver Forward-Gewinn oder keine Wachstumsschätzung. Modell nicht anwendbar.";
-  const S = t && t.scenarios;
-  const scen = S ? [["Bear", "bear"], ["Base", "base"], ["Bull", "bull"]].map(([l, k]) => `<tr>
-      <td>${l}</td><td class="n">${money(S[k].end_price, r.currency)}<br><span class="small">${pct(S[k].cagr)} p.a.</span></td>
-      <td class="l small">EPS-Wachstum ${pctPlain(S[k].growth, 0)} p.a. (abnehmend), KGV ${fmt(S[k].pe)}</td></tr>`).join("") : "";
+  const toBuy = isNum(v.buy_price) ? r.price / v.buy_price - 1 : null;
+  const comp = r.q_components || {};
+  const compRows = Object.entries(Q_COMP_INFO).filter(([k]) => k in comp).map(([k, info]) => {
+    const val = comp[k];
+    return `<div class="pillar"><span title="${esc(info.how)}">${k}</span>
+      <div class="bar"><span style="width:${isNum(val) ? val * 10 : 0}%"></span></div><b>${isNum(val) ? F[1].format(val) : "—"}</b></div>
+      <div class="note" style="margin:-4px 0 6px 98px">${info.value(r)}</div>`;
+  }).join("");
+  const adjRows = (r.q_adjustments || []).map(([t2, d]) => `<li>${esc(t2)}: <b>${d > 0 ? "+" : ""}${F[1].format(d)}</b></li>`).join("");
+
+  const decision = v.fair_value ? `
+      <dl class="kv big-kv">
+        <dt>Kurs</dt><dd>${money(r.price, r.currency)}</dd>
+        <dt>Fairer Wert</dt><dd><b>${money(v.fair_value, r.currency)}</b> <span class="muted small">(${pctN(v.upside, 0)} zum Kurs)</span></dd>
+        <dt>Spanne Bear–Bull</dt><dd>${money(v.range[0], r.currency)} – ${money(v.range[1], r.currency)}</dd>
+        <dt>Kaufkurs</dt><dd><b>≤ ${money(v.buy_price, r.currency)}</b> <span class="muted small">(Sicherheitsmarge ${pctPlain(v.mos_required, 0)})</span></dd>
+        <dt>Abstand zum Kaufkurs</dt><dd>${toBuy <= 0 ? '<span class="ok-line" style="display:inline">● im Kaufbereich</span>' : `Kurs liegt ${pctPlain(toBuy, 0)} darüber`}</dd>
+        <dt>Belastbarkeit</dt><dd>${esc(v.confidence)} <span class="muted small">(${v.methods.length} Methode${v.methods.length > 1 ? "n" : ""}${v.methods.length > 1 ? ", Übereinstimmung" : ""})</span></dd>
+      </dl>
+      <h4>Herleitung [BERECHNET aus SCHÄTZUNGEN]</h4>
+      <table class="metrics">${v.methods.map((x) => `<tr><td>${esc(x.name)}</td><td class="n">${money(x.value, r.currency)}</td></tr>
+        <tr><td colspan="2" class="l small muted" style="white-space:normal">${esc(x.detail)}</td></tr>`).join("")}</table>
+      ${v.discount_notes && v.discount_notes.length ? `<div class="note">Risikozuschläge im Diskontsatz: ${esc(v.discount_notes.join(", "))}</div>` : ""}
+      <h4>Kursziele (fairer Wert in n Jahren)</h4>
+      <table class="metrics">
+        <tr><td>1 Jahr</td><td class="n">${money(v.y1, r.currency)}</td><td class="n">${pctN(v.y1 / r.price - 1, 0)}</td></tr>
+        <tr><td>2 Jahre</td><td class="n">${money(v.y2, r.currency)}</td><td class="n">${pctN(v.y2 / r.price - 1, 0)}</td></tr>
+        <tr><td>3 Jahre</td><td class="n">${money(v.y3, r.currency)}</td><td class="n">${pctN(v.y3 / r.price - 1, 0)}</td></tr>
+      </table>
+      <div class="note">Erwartete Rendite p.a. über 3 Jahre inkl. Dividende: <b>${pctN(v.cagr3)}</b>, wenn der Kurs zum fairen Wert findet. Das ist ein Modell, keine Prognose. Der Bear-Fall ist keine Verlustgrenze.</div>`
+    : `<div class="note">${esc(v.reason || "Kein fairer Wert ermittelbar.")}</div>`;
 
   $("#drawerBody").innerHTML = `
     <div class="d-head">
@@ -609,9 +634,13 @@ function openDetail(sym) {
         ${stale ? '<div class="flag-list" style="margin-top:4px">⚠ Kein aktueller Referenzkurs: kein kursbezogenes Urteil</div>' : ""}
       </div>
       <div class="d-actions">
-        ${scoreBadge(r.score, true)}
-        <div><div>${verdictHtml(r)}</div>
-          <div class="small muted">Datenabdeckung ${pctPlain(r.coverage, 0)}${r.score_cap ? ` · Score gedeckelt (${esc(r.score_cap)})` : ""}${isNum(r.score_chg_1w) ? " · 1W " + delta(r.score_chg_1w) : ""}</div></div>
+        <div class="trio">
+          <div><span>Gesamt</span>${scoreBadge(r.score, true)}</div>
+          <div><span>Qualität</span>${scoreBadge(r.q_score)}</div>
+          <div><span>Preis</span>${scoreBadge(r.price_score)}</div>
+        </div>
+        <div style="max-width:260px"><div>${verdictHtml(r)}</div>
+          <div class="small muted">${ampelRow(r)} · Daten: ${esc((r.data_why || []).join(", "))}</div></div>
         <button class="btn secondary" id="wBtn">${WATCH.has(r.symbol) ? "★ Watchlist" : "☆ Watchlist"}</button>
         <button class="btn" id="claudeBtn" title="Prompt für die Einzelanalyse nach deinen Projekt-Anweisungen kopieren">Einzelanalyse-Prompt</button>
         <button class="icon-btn" id="closeBtn" aria-label="Schließen">✕</button>
@@ -625,26 +654,44 @@ function openDetail(sym) {
           <span><i style="background:var(--series-sma50)"></i>SMA50</span>
           <span><i style="background:var(--series-sma200)"></i>SMA200</span>
           <span><i class="zone"></i>Buy-Zonen</span>
+          <span><i style="background:var(--good)"></i>Kaufkurs</span>
           <span id="hoverVal" class="mono"></span>
           <div class="range">${["6M", "1J", "2J"].map((x, i) => `<button data-r="${x}" class="${i === 1 ? "on" : ""}">${x}</button>`).join("")}</div>
         </div>
         <div class="chart-box" id="chart"></div>
-        <div class="note">Tagesschlusskurse, dividenden- und splitbereinigt · letzter Kurstag ${esc(r.last_date)} · RSI(14) ${fmt(r.rsi14, 0)} · Abstand SMA200 ${pct(r.dist_sma200)} · 52W ${money(r.low52, "")} – ${money(r.high52, "")}</div>
+        <div class="note">Tagesschlusskurse, dividenden- und splitbereinigt · letzter Kurstag ${esc(r.last_date)} · RSI(14) ${fmt(r.rsi14, 0)} · Abstand SMA200 ${pct(r.dist_sma200)} · 52W ${money(r.low52, "")} – ${money(r.high52, "")} · Trend: ${esc(r.trend)}</div>
+        <h4>Einstieg laut Chart [BERECHNET aus Kursreihe]</h4>
+        ${r.in_buy_zone && !stale ? '<div class="ok-line">● Kurs liegt in Buy-Zone 1 (Unterstützung)</div>' : ""}
+        ${zones}
+        <div class="note">Die Chart-Zonen zeigen technische Unterstützungen. Ob der Preis fundamental attraktiv ist, zeigt der Kaufkurs rechts.</div>
       </div>
       <div class="panel">
-        <h3>Getrennte Beurteilung</h3>
-        <table class="metrics">${ampelDetail}</table>
-        ${flags.filter((f) => ["zyklik_spitzengewinn", "zyklik_normalisiert", "value_trap_risiko", "zahlen_in_kuerze"].includes(f)).map((f) => `<div class="flag-list" style="margin-top:6px">⚠ ${esc(flagText(f))}</div>`).join("")}
-        <div class="note">Vergleichsgruppe: <b>${esc(r.peer_group || r.sector || "Universum")}</b> (bei zu wenigen Werten Sektor bzw. Universum). Säule = mittleres Perzentil der Kennzahlen (0–10). 🟢 ≥ 6,5 · 🟡 3,5–6,5 · 🔴 &lt; 3,5. Grüne Ampeln werden nicht addiert, eine rote überstimmt sie.</div>
-        <h3 style="margin-top:16px">Buy-Zonen <span class="muted" style="text-transform:none;letter-spacing:0">· [BERECHNET] aus Kursreihe</span></h3>
-        ${r.in_buy_zone && !stale ? '<div class="ok-line">● Kurs liegt aktuell in Buy-Zone 1</div>' : ""}
-        ${zones}
+        <h3>Kaufentscheidung</h3>
+        ${decision}
       </div>
     </div>
 
     <div class="d-grid">
       <div class="panel">
-        <h3>Kennzahlen <span class="muted" style="text-transform:none;letter-spacing:0">· Balken = Perzentil im Sektor</span></h3>
+        <h3>Unternehmensqualität ${scoreBadge(r.q_score)} <span class="muted" style="text-transform:none;letter-spacing:0">· absolute Skala 0–10</span></h3>
+        ${compRows || '<div class="note">Zu wenige Daten für eine Qualitätsbewertung.</div>'}
+        ${adjRows ? `<h4>Zu- und Abschläge</h4><ul class="small" style="margin:0;padding-left:18px">${adjRows}</ul>` : ""}
+        ${flags.filter((f) => ["zyklik_spitzengewinn", "zyklik_normalisiert", "value_trap_risiko", "zahlen_in_kuerze"].includes(f)).map((f) => `<div class="flag-list" style="margin-top:6px">⚠ ${esc(flagText(f))}</div>`).join("")}
+        <div class="note">Vergleichsgruppe für Margen und Info-Perzentile: <b>${esc(r.peer_group || r.sector || "Universum")}</b>. Die Schwellen der übrigen Komponenten sind absolut, siehe „Methodik“.</div>
+      </div>
+      <div class="panel">
+        <h3>Steckbrief</h3>
+        <div id="profileBox"><div class="note">lädt…</div></div>
+        <h4>Nächster Prüfpunkt</h4>
+        <div class="small">${nextDate ? `Quartalszahlen voraussichtlich am <b>${esc(nextDate)}</b> (Yahoo-Kalender)` : '<span class="muted">Kein Termin bekannt</span>'}</div>
+        <h4>Nachrichten</h4>
+        <div id="newsBox"><div class="note">lädt…</div></div>
+      </div>
+    </div>
+
+    <div class="d-grid">
+      <div class="panel">
+        <h3>Kennzahlen <span class="muted" style="text-transform:none;letter-spacing:0">· Balken = Perzentil in der Vergleichsgruppe (Info)</span></h3>
         <table class="metrics">${metricRows.map((x) => `<tr><td>${x.label}</td><td class="n">${x.html}</td>
           <td class="l"><span class="ktag">${esc(tag(x.k, x.raw))}</span></td><td class="n">${x.pk ? pctRow(x.pk) : ""}</td></tr>`).join("")}</table>
         <div class="note">Fundamentaldaten Stand ${esc(r.fund_date)} (letzte zwölf Monate bzw. jüngstes Quartal laut Yahoo; GAAP/IFRS gemischt mit bereinigten Werten möglich) · Quelle Yahoo Finance · Bilanzwährung ${esc(r.financial_currency || "–")}</div>
@@ -654,30 +701,14 @@ function openDetail(sym) {
         <div id="histBox"></div>
       </div>
       <div class="panel">
-        <h3>Modell-Bewertung <span class="muted" style="text-transform:none;letter-spacing:0">· [BERECHNET aus SCHÄTZUNGEN]</span></h3>
-        ${t ? `<dl class="kv">
-            <dt>Faire Wertspanne heute</dt><dd>${money(t.fair_range[0], r.currency)} – ${money(t.fair_range[1], r.currency)}</dd>
-            <dt>Fairer Wert (Base)</dt><dd>${money(t.fair_value, r.currency)}</dd>
-            <dt>Potenzial zum fairen Wert</dt><dd>${pct(t.potential)}</dd>
-            <dt>Sicherheitsmarge</dt><dd>${pct(t.margin_of_safety)}</dd>
-          </dl>
-          <h4>Szenarien in 3 Jahren (inkl. Dividende ${pctPlain(t.div_yield)} p.a., ohne Wiederanlage)</h4>
-          <table class="metrics"><tr><td class="muted">Szenario</td><td class="n muted">Kurs &amp; Rendite</td><td class="l muted">Annahmen</td></tr>${scen}</table>
-          <h4>Kurspfad Base</h4>
-          <table class="metrics"><tr><td>1 Jahr</td><td class="n">${money(t.y1, r.currency)}</td><td class="n">${pct(t.y1_upside)}</td></tr>
-            <tr><td>2 Jahre</td><td class="n">${money(t.y2, r.currency)}</td><td class="n">${pct(t.y2_upside)}</td></tr>
-            <tr><td>3 Jahre</td><td class="n">${money(t.y3, r.currency)}</td><td class="n">${pct(t.y3_upside)}</td></tr></table>
-          <div class="note">Basis: ${esc(t.basis || "Konsens-EPS nächstes GJ")} · faires KGV ${fmt(t.fair_pe)} [SCHÄTZUNG]. Kein DCF. Die Einzelanalyse ersetzt es nicht. Ein Bear-Szenario ist keine Verlustuntergrenze.</div>`
-        : `<div class="note">${noModel}</div>`}
+        <h3>Weitere Einordnung</h3>
         <h4>Eingepreiste Erwartung (Reverse-DCF) [BERECHNET aus SCHÄTZUNG]</h4>
         ${isNum(ig) ? `<dl class="kv"><dt>Eingepreistes FCF-Wachstum</dt><dd>${pctN(ig)} p.a. über 10 Jahre</dd>
           <dt>Zum Vergleich</dt><dd>Umsatz-CAGR 5J ${pct(r.rev_cagr)}${igJudge ? ` → <b>${igJudge}</b>` : ""}</dd></dl>
-          <div class="note">Annahmen: Kapitalkosten 9 %, danach 2,5 % Dauerwachstum, Basis FCF der letzten 12 Monate und Unternehmenswert (EV). Einheitliche Annahmen für die Vergleichbarkeit, ersetzt keine individuelle DCF.</div>`
+          <div class="note">Basis FCF der letzten 12 Monate (in Investitionsphasen niedrig) und Unternehmenswert, Kapitalkosten 9 %, danach 2,5 %.</div>`
           : `<div class="note">${na.has("implied_growth") ? "Nicht anwendbar (Finanzwert)." : "Nicht berechenbar (FCF oder EV nicht positiv)."}</div>`}
         <h4>Gewinnrevisionen [SCHÄTZUNG]</h4>
         ${revHtml}
-        <h4>Nächster Prüfpunkt</h4>
-        <div class="small">${nextDate ? `Quartalszahlen voraussichtlich am <b>${esc(nextDate)}</b> (Yahoo-Kalender)` : '<span class="muted">Kein Termin bekannt</span>'}</div>
         <h4>Analysten-Konsens 12M [SCHÄTZUNG] – nur zum Vergleich</h4>
         ${isNum(r.analyst_target) ? `<dl class="kv"><dt>Ø Kursziel</dt><dd>${money(r.analyst_target, r.currency)} (${pct(r.analyst_upside)})</dd>
           <dt>Empfehlung</dt><dd>${fmt(r.analyst_rec, 1)} <span class="muted">(1 = Strong Buy … 5 = Sell)</span></dd>
@@ -685,7 +716,6 @@ function openDetail(sym) {
         ${secHtml}
         <h4>Prüfhinweise</h4>
         ${flags.length ? `<ul class="flag-list">${flags.map((f) => `<li>${esc(flagText(f))}</li>`).join("")}</ul>` : '<div class="ok-line">✓ Keine Auffälligkeiten bei den Plausibilitätsprüfungen</div>'}
-        ${r.website ? `<div class="note"><a href="${esc(r.website)}" target="_blank" rel="noopener">Unternehmens-Website</a></div>` : ""}
       </div>
     </div>
 
@@ -701,8 +731,26 @@ function openDetail(sym) {
   $("#wBtn").onclick = () => { toggleWatch(r.symbol); $("#wBtn").textContent = WATCH.has(r.symbol) ? "★ Watchlist" : "☆ Watchlist"; };
   $("#claudeBtn").onclick = () => copyPrompt(r);
   CUR_PX = null;
-  fetch(PX_URL(r.symbol)).then((x) => x.json()).then((px) => { CUR_PX = px; renderHist(px); drawChart(r, px); })
+  fetch(PX_URL(r.symbol)).then((x) => x.json()).then((px) => { CUR_PX = px; renderHist(px); renderProfile(px); drawChart(r, px); })
     .catch(() => { $("#chart").innerHTML = '<div class="empty">Kursdaten nicht verfügbar.</div>'; });
+}
+
+function renderProfile(px) {
+  const p = px.profile || {};
+  const emp = isNum(p.fullTimeEmployees) ? F[0].format(p.fullTimeEmployees) : "—";
+  const sum = p.longBusinessSummary || "";
+  $("#profileBox").innerHTML = `<dl class="kv">
+      <dt>Branche</dt><dd style="font-family:var(--sans)">${esc(p.industry || "—")} (${esc(p.sector || "—")})</dd>
+      <dt>Sitz</dt><dd style="font-family:var(--sans)">${esc([p.city, p.country].filter(Boolean).join(", ") || "—")}</dd>
+      <dt>Mitarbeiter</dt><dd>${emp}</dd>
+      ${p.website ? `<dt>Website</dt><dd style="font-family:var(--sans)"><a href="${esc(p.website)}" target="_blank" rel="noopener">${esc(p.website.replace(/^https?:\/\//, ""))}</a></dd>` : ""}
+    </dl>
+    ${sum ? `<details class="summary"><summary>Geschäftsbeschreibung (englisch, Yahoo)</summary><p class="small">${esc(sum)}</p></details>` : '<div class="note">Keine Geschäftsbeschreibung verfügbar.</div>'}`;
+  const news = px.news || [];
+  $("#newsBox").innerHTML = news.length ? `<ul class="news">${news.map((n) => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a>
+      <span class="muted small">${esc(n.publisher || "")}${n.date ? " · " + esc(new Date(n.date).toLocaleDateString("de-DE")) : ""}</span></li>`).join("")}</ul>
+      <div class="note">Schlagzeilen laut Yahoo (Stand ${esc(px.info_date || "")}), ungeprüft – Fakten, Gerüchte und Managementaussagen selbst unterscheiden.</div>`
+    : '<div class="note">Keine aktuellen Schlagzeilen verfügbar.</div>';
 }
 
 function renderHist(px) {
@@ -750,7 +798,8 @@ Ergänze gemäß meinen Präferenzen ein Scoring 1–10, Preisziele für 1, 2 un
 
 Orientierungswerte aus meinem Screener. Nicht als Quelle verwenden, alle Zahlen selbst aktuell verifizieren:
 - Referenzkurs ${f2(r.price, 2)} ${r.currency} (Yahoo, Kurszeitpunkt ${r.price_time || "unbekannt"}, Fundamentaldaten Stand ${r.fund_date})
-- Screener-Score ${r.score ?? "n/a"} · Urteil: ${r.verdict} · Ampeln: Qualität ${AMPEL[a["Qualität"] || "grau"]}, Bewertung ${AMPEL[a["Bewertung"] || "grau"]}, Wachstum ${AMPEL[a["Wachstum"] || "grau"]}, Daten ${AMPEL[a["Daten"] || "grau"]}, Einstieg ${AMPEL[a["Einstieg"] || "grau"]}
+- Screener: Gesamt ${r.score ?? "n/a"}, Qualität ${r.q_score ?? "n/a"}/10, Preis ${r.price_score ?? "n/a"}/10 · Urteil: ${r.verdict}
+- Modell-Fairer-Wert ${isNum(V(r, "fair_value")) ? V(r, "fair_value").toFixed(2) + " " + r.currency : "n/a"} (Belastbarkeit ${V(r, "confidence") || "n/a"}; ${(V(r, "methods") || []).map((x) => x.name + " " + x.value.toFixed(2)).join(", ")}), Kaufkurs laut Screener ${isNum(V(r, "buy_price")) ? "≤ " + V(r, "buy_price").toFixed(2) : "n/a"} · Ampeln: Qualität ${AMPEL[a["Qualität"] || "grau"]}, Bewertung ${AMPEL[a["Bewertung"] || "grau"]}, Wachstum ${AMPEL[a["Wachstum"] || "grau"]}, Daten ${AMPEL[a["Daten"] || "grau"]}, Einstieg ${AMPEL[a["Einstieg"] || "grau"]}
 - KGV ttm ${f2(r.pe_ttm)}, KGV fwd ${f2(r.pe_fwd)}, EV/EBITDA ${f2(r.ev_ebitda)}, FCF-Rendite ${p1(r.fcf_yield)}, ROE ${p1(r.roe)}, op. Marge ${p1(r.op_margin)}, Umsatzwachstum ${p1(r.rev_growth)}
 - ROIC 5J ${p1(r.roic_med5)}, Umsatz-CAGR 5J ${p1(r.rev_cagr)}, Aktienzahl p.a. ${p1(r.share_cagr)}, KGV vs. 5J-Median ${p1(r.pe_vs_hist)}, eingepreistes FCF-Wachstum (Reverse-DCF, 9 %/2,5 %) ${p1(r.implied_growth)}
 - EPS-Revision 90 Tage ${p1(r.rev_eps_90d)} · nächster Termin ${r.earnings_date || "unbekannt"}
@@ -803,7 +852,9 @@ async function drawChart(r, px) {
     price.createPriceLine({ ...opt, price: z.high, title: i === 0 ? "BZ1" : "BZ2" });
     price.createPriceLine({ ...opt, price: z.low, title: "", axisLabelVisible: false });
   });
-  if (r.targets) price.createPriceLine({ price: r.targets.y1, color: cssVar("--text-muted"), lineWidth: 1, lineStyle: 3, title: "Ziel 1J" });
+  const vv = r.valuation || {};
+  if (isNum(vv.buy_price)) price.createPriceLine({ price: vv.buy_price, color: cssVar("--good"), lineWidth: 2, lineStyle: 0, title: "Kaufkurs" });
+  if (isNum(vv.fair_value)) price.createPriceLine({ price: vv.fair_value, color: cssVar("--text-muted"), lineWidth: 1, lineStyle: 3, title: "Fairer Wert" });
   const setRange = (k) => {
     const days = { "6M": 126, "1J": 252, "2J": 520 }[k];
     const from = closes[Math.max(0, closes.length - days)].time;

@@ -36,21 +36,18 @@ def ampeln(r) -> str:
 
 
 def why(r) -> str:
-    """Kurzbegründung aus den stärksten belegten Kennzahlen."""
+    """Kurzbegründung: Qualität, fairer Wert, Kaufkurs, stärkste Kennzahlen."""
+    v = r.get("valuation") or {}
+    cur = r.get("currency") or ""
     parts = []
+    if r.get("q_score") is not None:
+        parts.append(f"Qualität {_n(r['q_score'])}")
+    if v.get("fair_value") is not None:
+        parts.append(f"fairer Wert {_n(v['fair_value'], 0)} {cur} ({_p(v.get('upside'), 0)})")
+    if v.get("buy_price") is not None:
+        parts.append(f"Kaufkurs ≤ {_n(v['buy_price'], 0)}")
     if r.get("roic_med5") is not None:
         parts.append(f"ROIC 5J {_p(r['roic_med5'], 0, False)}")
-    if r.get("pe_ttm") is not None and r.get("pe_vs_hist") is not None:
-        parts.append(f"KGV {_n(r['pe_ttm'])} ({_p(r['pe_vs_hist'], 0)} vs. eigenem 5J-Median)")
-    elif r.get("pe_fwd") is not None:
-        parts.append(f"KGV fwd {_n(r['pe_fwd'])}")
-    if r.get("rev_cagr") is not None:
-        parts.append(f"Umsatz 5J {_p(r['rev_cagr'], 0)} p.a.")
-    if r.get("rev_eps_90d") is not None:
-        parts.append(f"Revision 90T {_p(r['rev_eps_90d'], 1)}")
-    t = r.get("targets") or {}
-    if t.get("margin_of_safety") is not None:
-        parts.append(f"Sicherheitsmarge {_p(t['margin_of_safety'], 0)}")
     return " · ".join(parts[:4]) or "–"
 
 
@@ -59,7 +56,7 @@ def line(r, site) -> str:
 
 
 def table(rows, site, third) -> list[str]:
-    out = ["| Aktie | Score & Ampeln (Q B W D E) | " + third[0] + " |", "|---|---|---|"]
+    out = ["| Aktie | Gesamt · Ampeln (Q B W D E) | " + third[0] + " |", "|---|---|---|"]
     for r in rows:
         sc = _n(r.get("score")) if r.get("score") is not None else "–"
         out.append(f"| {line(r, site)} | {sc} {ampeln(r)} | {third[1](r)} |")
@@ -88,13 +85,13 @@ def build(data: dict, prev: dict, watch: list[str], site: str, mention: str | No
     md += [f"Datenstand {meta['generated_at'][:16].replace('T', ' ')} UTC · Kurse bis {meta.get('price_date_max')} · "
            f"{meta['rated']} bewertete Aktien · [Screener öffnen]({site})", ""]
 
-    md += [f"### 🆕 Neue Kandidaten für Einzelanalyse ({len(new_c)})" if not first
-           else f"### Kandidaten für Einzelanalyse ({len(cand)}) – erster Digest", ""]
+    md += [f"### 🆕 Neu im Kaufbereich – gute Unternehmen unter Kaufkurs ({len(new_c)})" if not first
+           else f"### Gute Unternehmen im Kaufbereich ({len(cand)}) – erster Digest", ""]
     sel = cand if first else new_c
     md += (table(sel[:15], site, ("Warum interessant", why)) if sel else ["Keine neuen Kandidaten diese Woche."]) + [""]
 
     if not first:
-        md += [f"### ↘️ Nicht mehr Kandidat ({len(lost_c)})", ""]
+        md += [f"### ↘️ Nicht mehr im Kaufbereich ({len(lost_c)})", ""]
         md += (table(lost_c[:15], site, ("Neues Urteil", lambda r: r["verdict"])) if lost_c else ["Keine."]) + [""]
 
     md += [f"### 🎯 {'Aktuell' if first else 'Neu'} in Buy-Zone 1 (Kandidat/Beobachten, {len(new_zone)})", ""]
@@ -115,7 +112,7 @@ def build(data: dict, prev: dict, watch: list[str], site: str, mention: str | No
             for r in soon] or ["Keine."]) + [""]
 
     if not first:
-        md += ["### 🏆 Top 10 Kandidaten aktuell", ""]
+        md += ["### 🏆 Top 10 im Kaufbereich (nach Gesamtscore)", ""]
         md += table(cand[:10], site, ("Warum interessant", why)) + [""]
 
     t = (meta.get("tracking") or {}).get("horizons", {})
@@ -126,8 +123,8 @@ def build(data: dict, prev: dict, watch: list[str], site: str, mention: str | No
                           f"({v['cohorts']} Kohorten)" for h, v in done.items()), ""]
     else:
         md += [f"Noch kein Horizont abgeschlossen (Start {meta.get('tracking', {}).get('since')}).", ""]
-    md += ["---", "<sub>Regelbasierter Screener, keine Anlageberatung. „Kandidat“ heißt: lohnt eine Einzelanalyse "
-           "nach den Projekt-Regeln, nicht „kaufen“.</sub>"]
+    md += ["---", "<sub>Regelbasierter Screener, keine Anlageberatung. „Im Kaufbereich“ heißt: gutes Unternehmen, Kurs unter "
+           "dem Modell-Kaufkurs – lohnt eine Einzelanalyse nach den Projekt-Regeln, nicht automatisch „kaufen“.</sub>"]
 
     state = {"date": today.isoformat(), "verdicts": {s: r["verdict_code"] for s, r in rows.items()},
              "zone": sorted(zone_now)}
