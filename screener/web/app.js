@@ -436,12 +436,17 @@ function method() {
     Als „Bank-ähnlich“ gelten nur Banken, Versicherer, Broker und Hypothekenfinanzierer. Visa, Mastercard, Ratingagenturen und Börsen werden normal bewertet.</p>
     <h4>2 · Fairer Wert je Aktie</h4>
     <ul class="small">
-      <li><b>DCF auf die Ertragskraft:</b> Basis ist der höhere Wert aus FCF der letzten 12 Monate und Owner Earnings des letzten Geschäftsjahres, abzüglich Aktienvergütung.
+      <li><b>DCF auf die Ertragskraft:</b> Basis sind die Owner Earnings des letzten Geschäftsjahres aus den geprüften Abschlüssen, abzüglich Aktienvergütung.
+        War das letzte Jahr ein Ausreißer nach unten (unter 60 % der 5-Jahres-Median-Marge, z.B. Vergleichszahlungen), zählt das Mittel aus beiden.
+        Nur ohne Mehrjahresdaten wird Yahoos FCF der letzten 12 Monate genutzt.
         Owner Earnings = operativer Cashflow − min(Investitionen, Abschreibungen). Investitionen über den Abschreibungen gelten als Wachstum, nicht als Erhalt.
         Deshalb werden Unternehmen in Investitionsphasen (z.B. KI-Rechenzentren) nicht als „teuer“ abgestraft.</li>
-      <li>Wachstum Jahre 1–5 = Mittel aus 5-Jahres-Umsatz-CAGR und aktuellem Umsatzwachstum (−3 … +20 %). Ab Jahr 6 läuft es linear auf 3 % aus, danach 2,5 % dauerhaft.
-        Diskontsatz 8,5 % plus Zuschläge für Verschuldung, instabile Margen und hohe Volatilität.</li>
-      <li><b>Gewinn × faires KGV:</b> Konsens-EPS des nächsten Geschäftsjahres × eigenes 5-Jahres-Median-KGV (sonst der Median der Gruppe), begrenzt auf 10–30.</li>
+      <li>Wachstum Jahre 1–5 = <b>Median</b> aus 5-Jahres-Umsatz-CAGR, aktuellem Umsatzwachstum und Konsens-Gewinnwachstum (−3 … +20 %). Ab Jahr 6 läuft es linear auf 3 % aus, danach 2,5 % dauerhaft.
+        Liegen die drei Werte mehr als 15 Prozentpunkte auseinander, sinkt die Belastbarkeit um eine Stufe.</li>
+      <li>Diskontsatz nach CAPM: 4,3 % + Beta × 4,5 %. Das Beta wird nach Blume geglättet (0,67 × Beta + 0,33) und auf 0,8–1,6 begrenzt, also 7,9–11,5 %.
+        Zuschläge: +1 % bei Verschuldung über 3× EBITDA, +1 % bei schwankenden Margen oder Verlustjahren.</li>
+      <li><b>Gewinn × faires KGV:</b> Konsens-EPS des nächsten Geschäftsjahres × faires KGV. Das faire KGV ist zur Hälfte das eigene 5-Jahres-Median-KGV und zur Hälfte ein wachstumsgerechtes KGV (12 + Wachstum in %; geeicht am Markt: rund 22× bei 10 % Wachstum).
+        Ohne eigene Historie gilt nur das wachstumsgerechte KGV. Begrenzt auf 10–30.</li>
       <li><b>Banken und Versicherer:</b> Buchwert × gerechtfertigtes KBV = (ROE − 3 %) / (10 % − 3 %). <b>REITs:</b> Dividendenmodell, grob.</li>
       <li><b>Belegte Zykliker:</b> normalisierte Marge (Median 5 J.) × aktueller Umsatz. Ohne Mehrjahresdaten gibt es keinen fairen Wert.</li>
       <li>Fairer Wert = Mittel der Methoden. <b>Belastbarkeit</b>: hoch, wenn die Methoden höchstens 30 % auseinanderliegen, mittel bis 80 %, sonst niedrig.</li>

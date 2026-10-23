@@ -2,16 +2,18 @@
 
 Unternehmen (zwei unabhängige Methoden, Mittelwert):
   1. DCF auf die Ertragskraft je Aktie
-     Basis = max(FCF letzte 12 M., Owner Earnings letztes GJ) minus Aktienvergütung
+     Basis = Owner Earnings letztes GJ (Ausreißerjahr: Mittel mit 5J-Median-Marge; ohne Historie: FCF 12 M.)
+       minus Aktienvergütung
        Owner Earnings = operativer Cashflow - min(Investitionen, Abschreibungen): Investitionen über den
        Abschreibungen sind Wachstum (z.B. KI-Rechenzentren), kein Erhalt.
        Belegte Zykliker: normalisiert = Median-Marge 5 J. × aktueller Umsatz je Aktie.
      Wachstum Jahre 1-5 = Median aus Umsatz-CAGR 5 J., aktuellem Umsatzwachstum und Konsens-EPS-Wachstum,
      begrenzt -3 … +20 %; Jahre 6-10 linear auf 3 %, danach 2,5 % ewig.
-     Diskontsatz = 4,3 % + Beta (Blume, 0,6-1,6) × 4,5 % + Zuschläge (Verschuldung > 3x EBITDA +1 %,
-     instabile Marge/Verlustjahre +1 %, Volatilität > 40 % +0,5 %).
+     Diskontsatz = 4,3 % + Beta (Blume, 0,8-1,6) × 4,5 % + Zuschläge (Verschuldung > 3x EBITDA +1 %,
+     instabile Marge/Verlustjahre +1 %; nur ohne Beta: Volatilität > 40 % +0,5 %).
   2. Multiplikator: Konsens-EPS nächstes GJ (Zykliker: normalisiertes EPS) × faires KGV
-     (½ eigenes Median-KGV 5 J. bzw. Gruppen-Median, ½ wachstumsgerecht 8,5 + 2 × g; je begrenzt 10-30).
+     (½ eigenes Median-KGV 5 J., ½ wachstumsgerecht 12 + g in %; ohne eigene Historie nur wachstumsgerecht;
+     begrenzt 10-30).
 Banken/Versicherer: gerechtfertigtes KBV = (ROE - 3 %) / (10 % - 3 %), begrenzt 0,5-3, × Buchwert je Aktie;
   dazu Konsens-EPS × faires KGV (7-16).
 REITs: Dividendenmodell (grob, niedrige Belastbarkeit).
@@ -25,7 +27,7 @@ from .quality import scale
 
 R_BASE, R_FIN, R_REIT = 0.085, 0.10, 0.085   # R_BASE nur noch als Rückfall ohne Beta
 RISK_FREE, EQUITY_PREMIUM = 0.043, 0.045      # 10-j. US-Staatsanleihe ~4,3 %, Aktienrisikoprämie 4,5 % [SCHÄTZUNG]
-BETA_MIN, BETA_MAX = 0.6, 1.6
+BETA_MIN, BETA_MAX = 0.8, 1.6               # Untergrenze: auch "defensive" Einzelaktien kosten >= ~8 %
 G_TERMINAL, G_FADE_TO = 0.025, 0.03
 G_MIN, G_MAX = -0.03, 0.20
 PE_MIN, PE_MAX = 10.0, 30.0
@@ -65,7 +67,7 @@ def growth_conflict(r: dict) -> bool:
 
 def discount_rate(r: dict) -> tuple[float, list[str]]:
     """Eigenkapitalkosten nach CAPM: risikoloser Zins + Beta × Risikoprämie. Beta nach Blume angepasst
-    (0,67 × Beta + 0,33, schwankt sonst stark) und auf 0,6-1,6 begrenzt -> 7,0 … 11,5 %."""
+    (0,67 × Beta + 0,33, schwankt sonst stark) und auf 0,8-1,6 begrenzt -> 7,9 … 11,5 %."""
     beta = _v(r.get("beta"))
     if beta is None:
         rate, why = R_BASE, ["kein Beta – Standard 8,5 %"]
@@ -79,7 +81,7 @@ def discount_rate(r: dict) -> tuple[float, list[str]]:
     if (_v(r.get("op_margin_std")) or 0) > 0.05 or (_v(r.get("loss_years5")) or 0) >= 2:
         rate += 0.01
         why.append("schwankende Marge/Verlustjahre +1 %")
-    if (_v(r.get("vol_1y")) or 0) > 0.40:
+    if beta is None and (_v(r.get("vol_1y")) or 0) > 0.40:   # mit Beta wäre das doppelt gezählt
         rate += 0.005
         why.append("Volatilität > 40 % +0,5 %")
     return rate, why
@@ -112,6 +114,11 @@ def base_cash_flow(r: dict, cyclical: bool) -> tuple[float | None, str]:
     if cyclical and _v(r.get("owner_margin_med5")) is not None and rev_ps:
         return r["owner_margin_med5"] * rev_ps - sbc_ps, "normalisiert: Median-Marge 5 J. × Umsatz je Aktie − Aktienvergütung"
     own = _v(r.get("owner_ps_trading"))
+    med, last = _v(r.get("owner_margin_med5")), _v(r.get("owner_margin_last"))
+    if own is not None and med and med > 0 and last is not None and last < 0.6 * med and rev_ps:
+        # Ausreißerjahr nach unten (Vergleichszahlungen, Sondereffekte): mit dem Mittel aus letztem Jahr und
+        # 5-Jahres-Median rechnen statt mit dem Tiefpunkt
+        return (0.5 * (last + med)) * rev_ps - sbc_ps, "Owner Earnings (schwaches letztes GJ geglättet mit 5J-Median) − Aktienvergütung"
     if own is not None:
         # Geprüfte Jahreszahlen haben Vorrang; Yahoos FCF der letzten 12 Monate ist teils "levered FCF"
         return own - sbc_ps, "Owner Earnings letztes GJ − Aktienvergütung"
@@ -163,16 +170,22 @@ def fair_value(r: dict, q_score: float | None, peer_pe: float | None) -> dict | 
         eps = _v(r.get("eps_norm_trading")) if cyclical else (
             price / r["pe_fwd"] if _v(r.get("pe_fwd")) and _v(r.get("eps_fwd")) and r["eps_fwd"] > 0 else None)
         hist_pe = _v(r.get("pe_hist_med5"))
-        anchor = hist_pe if hist_pe else peer_pe
-        # Wachstumsgerechtes KGV nach Graham (8,5 + 2 × erwartetes Wachstum in %): verhindert, dass ein
-        # historisch hohes KGV nach einem Wachstumseinbruch (z.B. Novo Nordisk) weiter angesetzt wird
-        g_pe = 8.5 + 2 * 100 * max(0.0, g or 0.0)
-        if eps and eps > 0 and anchor:
-            fpe = max(PE_MIN, min(PE_MAX, 0.5 * max(PE_MIN, min(PE_MAX, anchor)) + 0.5 * max(PE_MIN, min(PE_MAX, g_pe))))
+        # Wachstumsgerechtes KGV = 12 + erwartetes Wachstum in % (am Marktniveau geeicht: S&P 500 ~22x bei
+        # ~10 % Gewinnwachstum). Verhindert, dass ein historisch hohes KGV nach einem Wachstumseinbruch
+        # (z.B. Novo Nordisk) weiter angesetzt wird. Graham (8,5 + 2g) war für Wachstumswerte zu großzügig.
+        g_pe = 12 + 100 * max(0.0, g or 0.0)
+        clip = lambda x: max(PE_MIN, min(PE_MAX, x))
+        if eps and eps > 0 and g is not None:
+            if hist_pe:
+                fpe = clip(0.5 * clip(hist_pe) + 0.5 * clip(g_pe))
+                how = f"½ eigener 5J-Median {hist_pe:.1f}, ½ wachstumsgerecht {g_pe:.1f}"
+            else:
+                # Ohne eigene Historie nicht das Gruppen-KGV: Gruppen mischen Qualitätsführer und Problemfälle
+                fpe = clip(g_pe)
+                how = f"wachstumsgerecht 12 + {100 * max(0.0, g):.1f}"
             methods.append({"name": "Gewinn × faires KGV", "value": eps * fpe, "eps": eps, "pe": fpe,
                             "detail": f"{'normalisiertes' if cyclical else 'Konsens-'}EPS {eps:.2f} × KGV {fpe:.1f} "
-                                      f"(½ {'eigener 5J-Median' if hist_pe else 'Gruppen-Median'} {anchor:.1f}, "
-                                      f"½ wachstumsgerecht {g_pe:.1f}; je begrenzt 10–30)"})
+                                      f"({how}; begrenzt 10–30)"})
 
     methods = [m for m in methods if m["value"] and m["value"] > 0]
     if not methods:

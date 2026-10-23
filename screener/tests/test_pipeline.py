@@ -198,13 +198,20 @@ class ValuationModelTest(unittest.TestCase):
              "pe_hist_med5": 20.0, "flags": []}
         v = valuation.fair_value(r, 8.0, 18.0)
         self.assertEqual(len(v["methods"]), 2)
-        # faires KGV = ½ eigenes 20 + ½ Graham (8,5 + 2 × 8) = 22,25
-        self.assertAlmostEqual(v["methods"][1]["value"], 100 / 18 * 22.25, places=1)
+        # faires KGV = ½ eigenes 20 + ½ wachstumsgerecht (12 + 8) = 20
+        self.assertAlmostEqual(v["methods"][1]["value"], 100 / 18 * 20, places=1)
         self.assertAlmostEqual(v["buy_price"], v["fair_value"] * 0.9, places=1)          # Qualität 8 -> 10 %
         self.assertAlmostEqual(valuation.fair_value(r, 5.0, 18.0)["mos_required"], 0.30)  # schwache Qualität
         # Investitionsphase: FCF ttm ~0, Owner Earnings hoch -> Owner Earnings zählt
         r2 = dict(r, fcf_yield=0.005, owner_ps_trading=4.0)
         self.assertIn("Owner Earnings", valuation.fair_value(r2, 8.0, 18.0)["methods"][0]["detail"])
+
+    def test_owner_outlier_year_smoothed(self):
+        r = {"price": 100.0, "rev_ps_trading": 50.0, "owner_ps_trading": 2.5, "owner_margin_last": 0.05,
+             "owner_margin_med5": 0.15, "sbc_ps_trading": 0.0}
+        cf, src = valuation.base_cash_flow(r, False)
+        self.assertAlmostEqual(cf, 0.10 * 50)
+        self.assertIn("geglättet", src)
 
     def test_growth_median_and_conflict(self):
         r = {"rev_cagr": 0.20, "rev_growth": 0.02, "eps_growth_fwd": -0.15}
@@ -215,7 +222,7 @@ class ValuationModelTest(unittest.TestCase):
     def test_discount_rate_beta(self):
         low, _ = valuation.discount_rate({"beta": 0.3})
         high, _ = valuation.discount_rate({"beta": 2.5})
-        self.assertAlmostEqual(low, 0.043 + 0.6 * 0.045, places=4)     # Untergrenze 0,6
+        self.assertAlmostEqual(low, 0.043 + 0.8 * 0.045, places=4)     # Untergrenze 0,8
         self.assertAlmostEqual(high, 0.043 + 1.6 * 0.045, places=4)
         self.assertAlmostEqual(valuation.discount_rate({})[0], 0.085, places=4)
 
