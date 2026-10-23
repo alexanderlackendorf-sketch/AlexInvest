@@ -65,7 +65,11 @@ def components(r: dict, margin_pct: float | None) -> dict[str, float | None]:
         roic = _v(r.get("roic_med5"))
         if roic is None and _v(r.get("roic_ttm_est")) is not None:
             roic = _v(r["roic_ttm_est"]) * 0.9   # nur ein Jahr und geschätzte Steuerquote -> vorsichtiger
-        c["Rentabilität"] = scale(roic, ROIC_PTS) if roic is not None else scale(_v(r.get("roe")), ROE_FALLBACK_PTS)
+        rent = scale(roic, ROIC_PTS) if roic is not None else scale(_v(r.get("roe")), ROE_FALLBACK_PTS)
+        rx = scale(_v(r.get("roic_ex_gw_med5")), ROIC_PTS)
+        if rent is not None and rx is not None and _v(r.get("roic_med5")) is not None:
+            rent = (rent + rx) / 2   # Mittel aus ROIC mit und ohne Goodwill
+        c["Rentabilität"] = rent
         c["Margen"] = None if margin_pct is None else margin_pct * 10
         st = scale(_v(r.get("op_margin_std")), STAB_PTS)
         if st is not None and loss_years:

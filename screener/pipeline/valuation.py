@@ -6,12 +6,12 @@ Unternehmen (zwei unabhängige Methoden, Mittelwert):
        Owner Earnings = operativer Cashflow - min(Investitionen, Abschreibungen): Investitionen über den
        Abschreibungen sind Wachstum (z.B. KI-Rechenzentren), kein Erhalt.
        Belegte Zykliker: normalisiert = Median-Marge 5 J. × aktueller Umsatz je Aktie.
-     Wachstum Jahre 1-5 = ½ Umsatz-CAGR 5 J. + ½ aktuelles Umsatzwachstum, begrenzt -3 … +20 %,
-     Jahre 6-10 linear auf 3 %, danach 2,5 % ewig.
-     Diskontsatz 8,5 % + Zuschläge (Verschuldung > 3x EBITDA +1 %, instabile Marge/Verlustjahre +1 %,
-     Volatilität > 40 % +0,5 %).
+     Wachstum Jahre 1-5 = Median aus Umsatz-CAGR 5 J., aktuellem Umsatzwachstum und Konsens-EPS-Wachstum,
+     begrenzt -3 … +20 %; Jahre 6-10 linear auf 3 %, danach 2,5 % ewig.
+     Diskontsatz = 4,3 % + Beta (Blume, 0,6-1,6) × 4,5 % + Zuschläge (Verschuldung > 3x EBITDA +1 %,
+     instabile Marge/Verlustjahre +1 %, Volatilität > 40 % +0,5 %).
   2. Multiplikator: Konsens-EPS nächstes GJ (Zykliker: normalisiertes EPS) × faires KGV
-     (eigenes Median-KGV 5 J., sonst Gruppen-Median; begrenzt auf 10-30).
+     (½ eigenes Median-KGV 5 J. bzw. Gruppen-Median, ½ wachstumsgerecht 8,5 + 2 × g; je begrenzt 10-30).
 Banken/Versicherer: gerechtfertigtes KBV = (ROE - 3 %) / (10 % - 3 %), begrenzt 0,5-3, × Buchwert je Aktie;
   dazu Konsens-EPS × faires KGV (7-16).
 REITs: Dividendenmodell (grob, niedrige Belastbarkeit).
@@ -23,7 +23,9 @@ from __future__ import annotations
 
 from .quality import scale
 
-R_BASE, R_FIN, R_REIT = 0.085, 0.10, 0.085
+R_BASE, R_FIN, R_REIT = 0.085, 0.10, 0.085   # R_BASE nur noch als Rückfall ohne Beta
+RISK_FREE, EQUITY_PREMIUM = 0.043, 0.045      # 10-j. US-Staatsanleihe ~4,3 %, Aktienrisikoprämie 4,5 % [SCHÄTZUNG]
+BETA_MIN, BETA_MAX = 0.6, 1.6
 G_TERMINAL, G_FADE_TO = 0.025, 0.03
 G_MIN, G_MAX = -0.03, 0.20
 PE_MIN, PE_MAX = 10.0, 30.0
@@ -35,18 +37,41 @@ def _v(x):
     return None if x is None or x != x else x
 
 
+def growth_inputs(r: dict) -> list[float]:
+    """Drei Blickwinkel: Umsatz-CAGR 5 J. (Vergangenheit), Umsatz aktuell (Gegenwart), Konsens-EPS-Wachstum
+    (Erwartung). Das Konsenswachstum wird auf -20…+40 % begrenzt (Einmaleffekte im aktuellen Gewinn)."""
+    hist, now, fwd = _v(r.get("rev_cagr")), _v(r.get("rev_growth")), _v(r.get("eps_growth_fwd"))
+    if fwd is not None:
+        fwd = max(-0.20, min(0.40, fwd))
+    return [x for x in (hist, now, fwd) if x is not None]
+
+
 def growth_rate(r: dict) -> float | None:
-    """Basisfall: tatsächliches Umsatzwachstum (Mittel aus 5-Jahres-CAGR und aktuellem Wachstum), ohne
-    pauschalen Abschlag. Die Vorsicht steckt im Auslaufen auf 3 % ab Jahr 6 und im Bear-Szenario."""
-    hist, now = _v(r.get("rev_cagr")), _v(r.get("rev_growth"))
-    vals = [x for x in (hist, now) if x is not None]
+    """Basisfall: Median der drei Blickwinkel (robust gegen einen Ausreißer), ohne pauschalen Abschlag.
+    Die Vorsicht steckt im Auslaufen auf 3 % ab Jahr 6, im Bear-Szenario und in der Sicherheitsmarge."""
+    vals = sorted(growth_inputs(r))
     if not vals:
         return None
-    return max(G_MIN, min(G_MAX, sum(vals) / len(vals)))
+    n = len(vals)
+    med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+    return max(G_MIN, min(G_MAX, med))
+
+
+def growth_conflict(r: dict) -> bool:
+    """Widersprechen sich Vergangenheit, Gegenwart und Erwartung stark (> 15 Pp.), ist der faire Wert unsicher."""
+    vals = growth_inputs(r)
+    return len(vals) >= 2 and max(vals) - min(vals) > 0.15
 
 
 def discount_rate(r: dict) -> tuple[float, list[str]]:
-    rate, why = R_BASE, []
+    """Eigenkapitalkosten nach CAPM: risikoloser Zins + Beta × Risikoprämie. Beta nach Blume angepasst
+    (0,67 × Beta + 0,33, schwankt sonst stark) und auf 0,6-1,6 begrenzt -> 7,0 … 11,5 %."""
+    beta = _v(r.get("beta"))
+    if beta is None:
+        rate, why = R_BASE, ["kein Beta – Standard 8,5 %"]
+    else:
+        b = max(BETA_MIN, min(BETA_MAX, 0.67 * beta + 0.33))
+        rate, why = RISK_FREE + b * EQUITY_PREMIUM, [f"Beta {b:.2f} (angepasst)"]
     nd = _v(r.get("net_debt_ebitda"))
     if nd is not None and nd > 3:
         rate += 0.01
@@ -86,14 +111,14 @@ def base_cash_flow(r: dict, cyclical: bool) -> tuple[float | None, str]:
     sbc_ps = _v(r.get("sbc_ps_trading")) or 0.0
     if cyclical and _v(r.get("owner_margin_med5")) is not None and rev_ps:
         return r["owner_margin_med5"] * rev_ps - sbc_ps, "normalisiert: Median-Marge 5 J. × Umsatz je Aktie − Aktienvergütung"
-    ttm = _v(r.get("fcf_yield")) * price if (_v(r.get("fcf_yield")) is not None and price) else None
     own = _v(r.get("owner_ps_trading"))
-    cands = [x for x in (ttm, own) if x is not None]
-    if not cands:
+    if own is not None:
+        # Geprüfte Jahreszahlen haben Vorrang; Yahoos FCF der letzten 12 Monate ist teils "levered FCF"
+        return own - sbc_ps, "Owner Earnings letztes GJ − Aktienvergütung"
+    ttm = _v(r.get("fcf_yield")) * price if (_v(r.get("fcf_yield")) is not None and price) else None
+    if ttm is None:
         return None, ""
-    base = max(cands) - sbc_ps
-    src = "Owner Earnings letztes GJ" if own is not None and own >= (ttm or -1e18) else "FCF letzte 12 Monate"
-    return base, f"{src} − Aktienvergütung"
+    return ttm, "FCF letzte 12 Monate (Yahoo, ohne Mehrjahresdaten)"
 
 
 def fair_value(r: dict, q_score: float | None, peer_pe: float | None) -> dict | None:
@@ -138,12 +163,16 @@ def fair_value(r: dict, q_score: float | None, peer_pe: float | None) -> dict | 
         eps = _v(r.get("eps_norm_trading")) if cyclical else (
             price / r["pe_fwd"] if _v(r.get("pe_fwd")) and _v(r.get("eps_fwd")) and r["eps_fwd"] > 0 else None)
         hist_pe = _v(r.get("pe_hist_med5"))
-        fpe = hist_pe if hist_pe else peer_pe
-        if eps and eps > 0 and fpe:
-            fpe = max(PE_MIN, min(PE_MAX, fpe))
+        anchor = hist_pe if hist_pe else peer_pe
+        # Wachstumsgerechtes KGV nach Graham (8,5 + 2 × erwartetes Wachstum in %): verhindert, dass ein
+        # historisch hohes KGV nach einem Wachstumseinbruch (z.B. Novo Nordisk) weiter angesetzt wird
+        g_pe = 8.5 + 2 * 100 * max(0.0, g or 0.0)
+        if eps and eps > 0 and anchor:
+            fpe = max(PE_MIN, min(PE_MAX, 0.5 * max(PE_MIN, min(PE_MAX, anchor)) + 0.5 * max(PE_MIN, min(PE_MAX, g_pe))))
             methods.append({"name": "Gewinn × faires KGV", "value": eps * fpe, "eps": eps, "pe": fpe,
                             "detail": f"{'normalisiertes' if cyclical else 'Konsens-'}EPS {eps:.2f} × KGV {fpe:.1f} "
-                                      f"({'eigener 5J-Median' if hist_pe else 'Gruppen-Median'}, begrenzt 10–30)"})
+                                      f"(½ {'eigener 5J-Median' if hist_pe else 'Gruppen-Median'} {anchor:.1f}, "
+                                      f"½ wachstumsgerecht {g_pe:.1f}; je begrenzt 10–30)"})
 
     methods = [m for m in methods if m["value"] and m["value"] > 0]
     if not methods:
@@ -155,6 +184,9 @@ def fair_value(r: dict, q_score: float | None, peer_pe: float | None) -> dict | 
         conf = "hoch" if spread <= 1.3 else "mittel" if spread <= 1.8 else "niedrig"
     else:
         conf = "niedrig" if r.get("is_reit") else "mittel"
+    if growth_conflict(r) and conf != "niedrig":
+        conf = "mittel" if conf == "hoch" else "niedrig"
+        notes.append("Wachstum uneinheitlich (Vergangenheit/Gegenwart/Erwartung) – Belastbarkeit herabgestuft")
     mos = 0.10 if (q_score or 0) >= 7.5 else 0.20 if (q_score or 0) >= 6 else 0.30
     if conf == "niedrig":
         mos += 0.10

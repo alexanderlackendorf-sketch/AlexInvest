@@ -198,12 +198,26 @@ class ValuationModelTest(unittest.TestCase):
              "pe_hist_med5": 20.0, "flags": []}
         v = valuation.fair_value(r, 8.0, 18.0)
         self.assertEqual(len(v["methods"]), 2)
-        self.assertAlmostEqual(v["methods"][1]["value"], 100 / 18 * 20, places=1)
+        # faires KGV = ½ eigenes 20 + ½ Graham (8,5 + 2 × 8) = 22,25
+        self.assertAlmostEqual(v["methods"][1]["value"], 100 / 18 * 22.25, places=1)
         self.assertAlmostEqual(v["buy_price"], v["fair_value"] * 0.9, places=1)          # Qualität 8 -> 10 %
         self.assertAlmostEqual(valuation.fair_value(r, 5.0, 18.0)["mos_required"], 0.30)  # schwache Qualität
         # Investitionsphase: FCF ttm ~0, Owner Earnings hoch -> Owner Earnings zählt
         r2 = dict(r, fcf_yield=0.005, owner_ps_trading=4.0)
         self.assertIn("Owner Earnings", valuation.fair_value(r2, 8.0, 18.0)["methods"][0]["detail"])
+
+    def test_growth_median_and_conflict(self):
+        r = {"rev_cagr": 0.20, "rev_growth": 0.02, "eps_growth_fwd": -0.15}
+        self.assertAlmostEqual(valuation.growth_rate(r), 0.02)        # Median statt Mittel aus Vergangenheit
+        self.assertTrue(valuation.growth_conflict(r))
+        self.assertFalse(valuation.growth_conflict({"rev_cagr": 0.08, "rev_growth": 0.10}))
+
+    def test_discount_rate_beta(self):
+        low, _ = valuation.discount_rate({"beta": 0.3})
+        high, _ = valuation.discount_rate({"beta": 2.5})
+        self.assertAlmostEqual(low, 0.043 + 0.6 * 0.045, places=4)     # Untergrenze 0,6
+        self.assertAlmostEqual(high, 0.043 + 1.6 * 0.045, places=4)
+        self.assertAlmostEqual(valuation.discount_rate({})[0], 0.085, places=4)
 
     def test_fair_value_bank(self):
         r = {"price": 50.0, "is_financial": True, "roe_med5": 0.15, "pb": 1.0, "pe_fwd": 9.0, "eps_fwd": 5.5,

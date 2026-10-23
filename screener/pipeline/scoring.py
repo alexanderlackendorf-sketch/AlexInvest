@@ -192,6 +192,8 @@ def data_quality(row) -> tuple[str, list[str]]:
         why.append("Yahoo weicht vom SEC-Abschluss ab")
     if "kurs_veraltet" in flags:
         why.append("kein aktueller Referenzkurs")
+    if row.get("is_financial") and "kbv_unplausibel" in flags:
+        why.append("Buchwert je Aktie unplausibel – Bank/Versicherer nicht bewertbar")
     if why:
         return "rot", why
     if cov < 0.85:

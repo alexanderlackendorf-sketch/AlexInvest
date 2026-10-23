@@ -46,6 +46,7 @@ SEC_INSTANT = {
     "debt": ["LongTermDebt", "LongTermDebtNoncurrent"],
     "debt_current": ["LongTermDebtCurrent", "DebtCurrent"],
     "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+    "goodwill": ["Goodwill"],
 }
 
 
@@ -189,6 +190,7 @@ Y_ROWS = {
     "equity": ("bs", ["Stockholders Equity", "Common Stock Equity"]),
     "debt": ("bs", ["Total Debt"]),
     "cash": ("bs", ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"]),
+    "goodwill": ("bs", ["Goodwill"]),
 }
 
 
@@ -273,7 +275,7 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
 
     table = []
     margins, fcf_m, roics, fcfs, nis, sbc_r = [], [], [], [], [], []
-    ocfs5, nis5, roes, own_m = [], [], [], []
+    ocfs5, nis5, roes, own_m, roics_x = [], [], [], [], []
     for y in ys:
         rev, op, ni = g(y, "revenue"), g(y, "op_income"), g(y, "net_income")
         fcf = g(y, "ocf") - g(y, "capex") if g(y, "ocf") is not None and g(y, "capex") is not None else None
@@ -286,6 +288,12 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
         roic = op * (1 - tax_rate) / ic if (op is not None and tax_rate is not None and ic and ic > 0) else None
         if roic is not None and not -1 < roic < 2:
             roic = None
+        # ROIC ohne Goodwill: Übernahmeaufschläge drücken den ROIC, sagen aber wenig über das Geschäft selbst
+        gw = g(y, "goodwill") or 0.0
+        ic_x = ic - gw if ic is not None else None
+        roic_x = op * (1 - tax_rate) / ic_x if (op is not None and tax_rate is not None and ic_x and ic_x > 0) else None
+        if roic_x is not None and not -1 < roic_x < 3:
+            roic_x = None
         om = op / rev if (op is not None and rev and rev > 0) else None
         # Ertragskraft vor Wachstumsinvestitionen ("Owner Earnings"): Investitionen über den Abschreibungen
         # gelten als Wachstum, nicht als Erhalt -> operativer Cashflow minus min(Investitionen, Abschreibungen)
@@ -317,6 +325,8 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
                 nis5.append(ni)
             if roe is not None:
                 roes.append(roe)
+            if roic_x is not None:
+                roics_x.append(roic_x)
             if own is not None and rev and rev > 0:
                 own_m.append(own / rev)
 
@@ -346,6 +356,7 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
     if out["ocf_conversion"] is not None and not 0 < out["ocf_conversion"] < 6:
         out["ocf_conversion"] = None
     out["roe_med5"] = st.median(roes) if len(roes) >= 3 else None
+    out["roic_ex_gw_med5"] = st.median(roics_x) if len(roics_x) >= 3 else None
     out["roe_std5"] = st.pstdev(roes) if len(roes) >= 3 else None
     out["owner_margin_med5"] = st.median(own_m) if len(own_m) >= 3 else None
     out["owner_margin_last"] = own_m[-1] if own_m else None

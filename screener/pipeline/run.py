@@ -235,8 +235,14 @@ def main(argv=None):
         # Weicht er mehr als Faktor 2 ab (andere Aktiengattung, Einheitenfehler), werden die Je-Aktie-Werte verworfen.
         fin_cur = r.get("financial_currency")
         if r.get("rev_ps_trading") and r.get("revenue_fin") and r.get("shares_out") and fin_cur in fx and cur in fx:
-            y_rev_ps = r["revenue_fin"] / r["shares_out"] * fx[fin_cur] / fx[cur]
-            if not 0.5 < r["rev_ps_trading"] / y_rev_ps < 2:
+            # Aktienzahl der gehandelten Gattung UND Gesamtzahl über alle Gattungen (Marktkap./Kurs) zulassen,
+            # z.B. Alphabet: A-Aktien 5,8 Mrd., alle Gattungen 12,2 Mrd.
+            ok = False
+            for sh in (r["shares_out"], (r.get("market_cap") or 0) / r["price"] if r.get("price") else None):
+                if sh:
+                    y_rev_ps = r["revenue_fin"] / sh * fx[fin_cur] / fx[cur]
+                    ok = ok or 0.6 < r["rev_ps_trading"] / y_rev_ps < 1.67
+            if not ok:
                 r["rev_ps_trading"] = r["owner_ps_trading"] = r["sbc_ps_trading"] = None
                 r["flags"].append("historie_je_aktie_unplausibel")
         table = h.pop("hist_table", [])
