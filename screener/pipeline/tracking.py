@@ -19,16 +19,22 @@ GROUPS = ["kandidat", "top_decile", "universe", "bottom_decile"]
 BENCHMARKS = {"^GSPC": "S&P 500", "^GDAXI": "DAX"}
 
 
-def snapshot(state: dict, today: dt.date, rows: list[dict]) -> dict:
+def snapshot(state: dict, today: dt.date, rows: list[dict], model_version: int = 1) -> dict:
     """Legt höchstens eine Kohorte pro ISO-Kalenderwoche an."""
     snaps = state.setdefault("snapshots", {})
     week = today.isocalendar()[:2]
-    if any(dt.date.fromisoformat(d).isocalendar()[:2] == week for d in snaps):
+    if any(dt.date.fromisoformat(d[:10]).isocalendar()[:2] == week and g.get("model", 1) == model_version
+           for d, g in snaps.items()):
         return state
+    # Neues Modell in derselben Woche: Schlüssel eindeutig halten, alte Kohorte bleibt erhalten
+    key = today.isoformat()
+    if key in snaps:
+        key = f"{key}#m{model_version}"
     rated = sorted((r for r in rows if r.get("score") is not None and r["score"] == r["score"]),
                    key=lambda r: -r["score"])
     n10 = max(len(rated) // 10, 1)
-    snaps[today.isoformat()] = {
+    snaps[key] = {
+        "model": model_version,
         "kandidat": [r["symbol"] for r in rated if r.get("verdict_code") == "kandidat"],
         "top_decile": [r["symbol"] for r in rated[:n10]],
         "bottom_decile": [r["symbol"] for r in rated[-n10:]],
@@ -52,14 +58,17 @@ def _ret(close: pd.Series | None, start: dt.date, days: int | None):
     return float(after.iloc[days]) / entry - 1, True
 
 
-def evaluate(state: dict, closes: dict[str, pd.Series]) -> dict:
-    snaps = state.get("snapshots", {})
-    out = {"since": min(snaps) if snaps else None, "cohorts": len(snaps), "horizons": {}, "running": {}}
+def evaluate(state: dict, closes: dict[str, pd.Series], model_version: int = 1) -> dict:
+    # Nur Kohorten des aktuellen Bewertungsmodells auswerten (ältere bleiben gespeichert, werden aber
+    # nicht mit dem neuen Modell vermischt)
+    snaps = {d: g for d, g in state.get("snapshots", {}).items() if g.get("model", 1) == model_version}
+    out = {"since": min(snaps) if snaps else None, "cohorts": len(snaps), "horizons": {}, "running": {},
+           "model": model_version}
     for hname, days in list(HORIZONS.items()) + [("seit Start", None)]:
         per_group: dict[str, list[float]] = {g: [] for g in GROUPS + list(BENCHMARKS.values())}
         n_done, pairs = 0, []
         for d, groups in snaps.items():
-            start = dt.date.fromisoformat(d)
+            start = dt.date.fromisoformat(d[:10])
             cohort: dict[str, float] = {}
             for g in GROUPS:
                 rets = [r for r, ok in (_ret(closes.get(s), start, days) for s in groups.get(g, [])) if ok]

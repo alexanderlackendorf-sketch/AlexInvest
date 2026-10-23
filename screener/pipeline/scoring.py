@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import quality, valuation
+
 # (Kennzahl, höher_ist_besser)
 PILLARS: dict[str, dict] = {
     "Qualität": {"weight": 0.35, "in_score": True, "metrics": [
@@ -276,51 +278,34 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
     res = pd.DataFrame(index=df.index)
     for name, p in PILLARS.items():
         mat = pd.concat([pct[m].rename(m) for m, _ in p["metrics"]], axis=1)
-        res[f"p_{name}"] = (mat.mean(axis=1, skipna=True) * 10).round(1)
-
-    for s, r in df.iterrows():
-        if "zyklik_spitzengewinn" in extra_flags[s]:
-            # Ohne Mehrjahresdaten kein normalisierter Gewinn -> Bewertung höchstens neutral
-            pb = res.at[s, "p_Bewertung"]
-            if pb == pb:
-                res.at[s, "p_Bewertung"] = min(pb, 5.0)
-        rg, mom = r.get("rev_growth"), r.get("mom_12_1")
-        if (res.at[s, "p_Bewertung"] == res.at[s, "p_Bewertung"] and res.at[s, "p_Bewertung"] >= 7
-                and rg == rg and rg is not None and rg < 0 and mom == mom and mom is not None and mom < -0.2):
-            extra_flags[s].append("value_trap_risiko")
-
-    acc = pd.Series(0.0, index=df.index)
-    total_w = pd.Series(0.0, index=df.index)
-    for name in SCORE_PILLARS:
-        ps = res[f"p_{name}"] / 10
-        has = ps.notna()
-        acc += (ps.fillna(0) * PILLARS[name]["weight"]).where(has, 0)
-        total_w += pd.Series(PILLARS[name]["weight"], index=df.index).where(has, 0)
-    composite = acc / total_w.replace(0, pd.NA)
-
+        res[f"p_{name}"] = (mat.mean(axis=1, skipna=True) * 10).round(1)   # nur Information (Perzentile)
     res["coverage"] = [round(min(n_avail[s] / _applicable(df.loc[s].to_dict()), 1), 2) for s in df.index]
-    core_ok = res["p_Bewertung"].notna() & res["p_Qualität"].notna()
-    valid = core_ok & (res["coverage"] >= MIN_COVERAGE)
-    composite = composite.where(valid)
-    sc = (1 + 9 * pd.to_numeric(composite, errors="coerce").rank(pct=True)).round(1)
 
-    # Rote Ampeln deckeln den Score (keine Kompensation durch andere Stärken)
-    caps = []
+    # --- Absolute Qualität und fairer Wert je Aktie ---
+    peer_pe = df.groupby("peer_group")["pe_fwd"].median().to_dict()
+    margin_pct = pct["op_margin"]
+    q_scores, q_comp, q_adj, vals, p_scores, totals = [], [], [], [], [], []
     for s in df.index:
-        cap, why = 10.0, []
-        if ampel(res.at[s, "p_Qualität"]) == "rot":
-            cap, why = min(cap, 4.0), why + ["Qualität rot"]
-        if ampel(res.at[s, "p_Bewertung"]) == "rot":
-            cap, why = min(cap, 6.0), why + ["Bewertung rot"]
-        if "value_trap_risiko" in extra_flags[s]:
-            cap, why = min(cap, 6.0), why + ["Value-Trap-Risiko"]
-        if sc[s] == sc[s] and sc[s] > cap:
-            sc[s] = cap
-            caps.append(", ".join(why))
-        else:
-            caps.append(None)
-    res["score"] = sc
-    res["score_cap"] = caps
+        row = df.loc[s].to_dict()
+        row["flags"] = list(row.get("flags") or []) + extra_flags[s]
+        mp = margin_pct.get(s)
+        q = quality.quality(row, None if mp != mp else mp)
+        v = valuation.fair_value(row, q["score"], _nan_none(peer_pe.get(row.get("peer_group"))))
+        p_sc = (v or {}).get("price_score")
+        q_scores.append(q["score"])
+        q_comp.append(q["components"])
+        q_adj.append(q["adjustments"])
+        vals.append(v)
+        p_scores.append(p_sc)
+        totals.append(total_score(q["score"], p_sc, row))
+        if q["score"] is not None and q["score"] < 5 and p_sc is not None and p_sc >= 7:
+            extra_flags[s].append("value_trap_risiko")
+    res["q_score"] = q_scores
+    res["q_components"] = q_comp
+    res["q_adjustments"] = q_adj
+    res["valuation"] = vals
+    res["price_score"] = p_scores
+    res["score"] = totals
     res["extra_flags"] = [extra_flags[s] for s in df.index]
     res["peer_group"] = df["peer_group"]
     res["metric_pct"] = [
@@ -329,45 +314,84 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
     return res
 
 
-KANDIDAT_IN, KANDIDAT_OUT = 8.0, 7.5     # Hysterese: Aufstieg ab 8,0, Abstieg erst unter 7,5
-BEOBACHTEN_IN, BEOBACHTEN_OUT = 5.5, 5.0
+def _nan_none(x):
+    return None if x is None or x != x else x
+
+
+W_QUALITY, W_PRICE = 0.55, 0.45
+MODEL_VERSION = 2   # 1: Perzentil-Rangfolge, 2: absolute Qualität + fairer Wert
+
+
+def total_score(q, p, row) -> float | None:
+    """Gesamt 1-10 = 55 % Qualität + 45 % Preis-Attraktivität, kleine Korrektur durch Gewinnrevisionen.
+    Schwache Qualität wird durch einen niedrigen Preis nicht ausgeglichen (Deckel 4,5)."""
+    if q is None:
+        return None
+    p = valuation.NEUTRAL_P if p is None else p
+    s = W_QUALITY * q + W_PRICE * p
+    rev = _nan_none(row.get("rev_eps_90d"))
+    if rev is not None:
+        s += 0.3 if rev > 0.03 else -0.3 if rev < -0.03 else 0.0
+    if q < 4:
+        s = min(s, 4.5)
+    return round(max(1.0, min(10.0, s)), 1)
+
+
+Q_GOOD, Q_OK = 7.0, 5.0
+KAUF_EXIT_TOL = 1.05   # Hysterese: Kandidat bleibt, solange der Kurs max. 5 % über dem Kaufkurs liegt
 
 
 def assess(row: dict, prev_code: str | None = None) -> dict:
-    """Ampeln + Urteil für eine fertige Zeile (nach Score, SEC-Status und Flags).
-    prev_code: Urteil des Vortags -> Hysterese verhindert tägliches Hin- und Herspringen."""
-    p = row["pillars"]
-    a = {"Qualität": ampel(p.get("Qualität")), "Bewertung": ampel(p.get("Bewertung")),
-         "Wachstum": ampel(p.get("Wachstum"))}
+    """Ampeln + Urteil. Leitfrage: Gutes Unternehmen? Interessanter Kaufkurs?"""
+    q = row.get("q_score")
+    v = row.get("valuation") or {}
+    p = row.get("price_score")
+    a = {"Qualität": "grau" if q is None else "gruen" if q >= Q_GOOD else "gelb" if q >= Q_OK else "rot",
+         "Bewertung": "grau" if p is None else "gruen" if p >= 6 else "gelb" if p >= 3.5 else "rot",
+         "Wachstum": ampel_component((row.get("q_components") or {}).get("Wachstum"))}
     dq, dq_why = data_quality(row)
     a["Daten"] = dq
     a["Einstieg"] = entry(row)
-    sc = row.get("score")
-    flags = row.get("flags") or []
+    flags = set(row.get("flags") or [])
+    price, fv, buy = row.get("price"), v.get("fair_value"), v.get("buy_price")
+    in_buy = bool(price and buy and price <= buy * (KAUF_EXIT_TOL if prev_code == "kandidat" else 1.0))
+    below_fv = bool(price and fv and price <= fv)
+    cur = row.get("currency") or ""
+    buy_txt = f" · Kaufkurs ≤ {buy:,.2f} {cur}".replace(",", "X").replace(".", ",").replace("X", ".") if buy else ""
 
-    if sc is None or sc != sc or dq == "rot":
+    if q is None or dq == "rot":
         code, text = "nab", "Nicht ausreichend beurteilbar"
-    elif a["Qualität"] == "rot":
-        code, text = "meiden_schwach", "Meiden – wirtschaftlich schwach"
-    elif a["Bewertung"] == "rot":
-        if a["Qualität"] == "gruen":
-            code, text = "beobachten_teuer", "Beobachten – gutes Unternehmen, zu teuer"
+    elif fv is None:
+        code, text = ("beobachten", "Gutes Unternehmen – Bewertung nicht belastbar") if q >= Q_GOOD else (
+            "neutral", "Bewertung nicht belastbar")
+    elif q >= Q_GOOD:
+        if in_buy and "zyklik_spitzengewinn" not in flags:
+            code, text = "kandidat", "Gutes Unternehmen im Kaufbereich – Kandidat für Einzelanalyse"
+        elif below_fv:
+            code, text = "beobachten", "Gutes Unternehmen – nahe Kaufbereich" + buy_txt
         else:
-            code, text = "meiden_teuer", "Meiden – zu teuer"
-    elif (sc >= (KANDIDAT_OUT if prev_code == "kandidat" else KANDIDAT_IN)
-          and a["Qualität"] == "gruen" and a["Bewertung"] in ("gruen", "gelb") and a["Wachstum"] != "rot"
-          and not {"zyklik_spitzengewinn", "value_trap_risiko"} & set(flags)):
-        code, text = "kandidat", "Kandidat für Einzelanalyse"
-    elif sc >= (BEOBACHTEN_OUT if prev_code in ("kandidat", "beobachten") else BEOBACHTEN_IN):
-        code, text = "beobachten", "Beobachten"
-    elif "rot" in (a["Wachstum"],) or sc < 3:
-        code, text = "meiden", "Meiden"
+            code, text = "beobachten_teuer", "Gutes Unternehmen – auf Kaufkurs warten" + buy_txt
+    elif q >= Q_OK:
+        if in_buy:
+            code, text = "beobachten", "Solide Qualität, günstig bewertet" + buy_txt
+        elif price and fv and price <= fv * 1.1:
+            code, text = "neutral", "Solide Qualität, fair bewertet"
+        else:
+            code, text = "meiden_teuer", "Solide Qualität, aber zu teuer"
     else:
-        # Keine rote Ampel, aber auch kein Vorteil: kein "Meiden" ohne Begründung
-        code, text = "neutral", "Kein Vorteil erkennbar"
+        if in_buy:
+            code, text = "meiden", "Schwache Qualität, niedrig bewertet – Value-Falle möglich"
+        else:
+            code, text = "meiden_schwach", "Meiden – schwache Qualität"
     if code in ("kandidat", "beobachten") and a["Einstieg"] == "gruen" and row.get("in_buy_zone"):
-        text += " · Kurs in Buy-Zone"
+        text += " · Chart in Buy-Zone"
     if "zahlen_in_kuerze" in flags and code != "nab":
         d = int(row.get("earnings_in_days") or 0)
         text += " · Zahlen " + ("heute" if d == 0 else "morgen" if d == 1 else f"in {d} Tagen")
     return {"ampeln": a, "data_why": dq_why, "verdict_code": code, "verdict": text}
+
+
+def ampel_component(v) -> str:
+    if v is None or v != v:
+        return "grau"
+    return "gruen" if v >= 6.5 else "rot" if v < 3.5 else "gelb"

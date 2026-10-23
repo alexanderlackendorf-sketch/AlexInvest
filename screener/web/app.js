@@ -22,6 +22,8 @@ const FLAG_TEXT = {
   zyklik_normalisiert: "Zyklische Branche mit möglichem Spitzengewinn – Bewertung daher über den normalisierten Gewinn (aktueller Umsatz × Median-Nettomarge 5 J.) statt über das aktuelle KGV",
   zahlen_in_kuerze: "Quartalszahlen in den nächsten 7 Tagen – Einstieg erst danach prüfen (Kurslücken-Risiko)",
   split_nach_bericht_bereinigt: "Aktiensplit nach dem letzten Jahresbericht – historische EPS/Aktienzahlen entsprechend bereinigt",
+  historie_je_aktie_unplausibel: "Je-Aktie-Werte der Historie passen nicht zu Yahoo (andere Aktiengattung/Einheit) – für die Bewertung verworfen",
+  kbv_unplausibel: "Buchwert je Aktie unplausibel (z.B. andere Aktiengattung) – KBV verworfen",
   value_trap_risiko: "Value-Trap-Risiko: billig bewertet, aber Umsatz rückläufig und Kurs im Abwärtstrend",
 };
 const AMPEL = { gruen: "🟢", gelb: "🟡", rot: "🔴", grau: "⚪" };

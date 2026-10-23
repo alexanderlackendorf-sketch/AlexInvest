@@ -1,6 +1,7 @@
 """Rohdaten von Yahoo Finance (über yfinance). Keine Berechnungen, nur Abruf + Retry."""
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 
@@ -24,6 +25,7 @@ INFO_FIELDS = [
     "targetMeanPrice", "targetMedianPrice", "targetHighPrice", "targetLowPrice",
     "numberOfAnalystOpinions", "recommendationMean", "recommendationKey", "website",
     "regularMarketTime", "exchange", "fullExchangeName", "exchangeTimezoneName",
+    "longBusinessSummary", "fullTimeEmployees", "city", "industryDisp", "sectorDisp",
 ]
 
 
@@ -64,12 +66,34 @@ def _extras(t) -> dict:
     except Exception:  # noqa: BLE001
         pass
     try:
+        out["news"] = _news(t.news)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         cal = t.calendar
         dates = cal.get("Earnings Date") if isinstance(cal, dict) else None
         if dates:
             out["earnings_date"] = min(d for d in dates).isoformat()
     except Exception:  # noqa: BLE001
         pass
+    return out
+
+
+def _news(items, n: int = 6) -> list[dict]:
+    """Schlagzeilen (Titel, Quelle, Datum, Link). yfinance liefert je nach Version zwei Formate."""
+    out = []
+    for it in items or []:
+        c = it.get("content") if isinstance(it.get("content"), dict) else it
+        title = c.get("title")
+        link = (c.get("canonicalUrl") or {}).get("url") or (c.get("clickThroughUrl") or {}).get("url") or c.get("link")
+        pub = (c.get("provider") or {}).get("displayName") or c.get("publisher")
+        when = c.get("pubDate") or c.get("displayTime")
+        if not when and c.get("providerPublishTime"):
+            when = dt.datetime.fromtimestamp(c["providerPublishTime"], dt.timezone.utc).isoformat()
+        if title and link:
+            out.append({"title": title[:200], "link": link, "publisher": pub, "date": (when or "")[:10]})
+        if len(out) >= n:
+            break
     return out
 
 

@@ -19,7 +19,7 @@ import pandas as pd
 from . import fetch
 
 log = logging.getLogger(__name__)
-HIST_VERSION = 1
+HIST_VERSION = 2  # 2: zusätzlich Abschreibungen (für Ertragskraft vor Wachstumsinvestitionen)
 MAX_YEARS = 10
 
 # --- SEC: Konzepte je Größe (erstes vorhandenes gewinnt, Umsatz: größter Wert je Stichtag) ---
@@ -38,6 +38,8 @@ SEC_DURATION = {
                 "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
                "USD", "first"),
     "tax": (["IncomeTaxExpenseBenefit"], "USD", "first"),
+    "da": (["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
+            "DepreciationAmortizationAndAccretionNet", "Depreciation"], "USD", "first"),
 }
 SEC_INSTANT = {
     "equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
@@ -106,6 +108,24 @@ def adjust_for_recent_split(years: list[dict], shares_now, eps_ttm=None) -> floa
     return f
 
 
+def fix_share_units(years: list[dict]) -> list[dict]:
+    """Aktienzahl gegen Nettogewinn / EPS prüfen. Manche Filer melden die Aktienzahl in Tausend oder
+    Millionen (z.B. McDonald's: 716,4 statt 716 Mio.). Passt eine Skalierung, wird sie übernommen."""
+    for y in years:
+        sh, ni, eps = y.get("shares"), y.get("net_income"), y.get("eps")
+        if not sh or not ni or not eps or abs(eps) < 1e-9:
+            continue
+        implied = ni / eps
+        if implied <= 0 or 0.5 < sh / implied < 2:
+            continue
+        for f in (1e3, 1e6):
+            if 0.5 < sh * f / implied < 2:
+                y["shares"] = sh * f
+                y["shares_unit_fixed"] = True
+                break
+    return years
+
+
 def split_adjust(years: list[dict]) -> list[dict]:
     """Ältere Jahresberichte enthalten EPS/Aktienzahl vor späteren Splits. Springt die verwässerte
     Aktienzahl zwischen zwei Jahren genau um einen Split-Faktor, werden alle früheren Jahre angepasst."""
@@ -150,7 +170,7 @@ def extract_sec(facts: dict) -> list[dict]:
             y["debt"] = (y.get("debt") or 0) + (y.get("debt_current") or 0)
         y.pop("debt_current", None)
         years.append(y)
-    return split_adjust(years)
+    return split_adjust(fix_share_units(years))
 
 
 # --- Yahoo-Jahresabschlüsse (Nicht-US) ---
@@ -164,6 +184,7 @@ Y_ROWS = {
     "tax": ("is", ["Tax Provision"]),
     "ocf": ("cf", ["Operating Cash Flow"]),
     "capex": ("cf", ["Capital Expenditure"]),
+    "da": ("cf", ["Depreciation And Amortization", "Depreciation Amortization Depletion"]),
     "sbc": ("cf", ["Stock Based Compensation"]),
     "equity": ("bs", ["Stockholders Equity", "Common Stock Equity"]),
     "debt": ("bs", ["Total Debt"]),
@@ -192,7 +213,7 @@ def extract_yahoo(stmts: dict[str, pd.DataFrame]) -> list[dict]:
             y["capex"] = abs(y["capex"])  # Yahoo: negativ (Mittelabfluss), SEC: positiv
         if y["revenue"] is not None or y["net_income"] is not None:
             years.append(y)
-    return split_adjust(years)
+    return split_adjust(fix_share_units(years))
 
 
 def refresh_yahoo(universe: list[dict], cache: dict, max_checks: int = 200) -> dict:
@@ -234,7 +255,7 @@ def _price_at(close: pd.Series | None, date: str):
 
 def derive(years: list[dict], close: pd.Series | None = None, same_currency: bool = True) -> dict:
     """Abgeleitete Kennzahlen [BERECHNET] + kompakte Jahrestabelle für die Oberfläche."""
-    ys = [y for y in years if y.get("revenue") or y.get("net_income")]
+    ys = fix_share_units([dict(y) for y in years if y.get("revenue") or y.get("net_income")])
     out: dict = {"hist_years": len(ys)}
     if len(ys) < 3:
         out["hist_table"] = []
@@ -252,6 +273,7 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
 
     table = []
     margins, fcf_m, roics, fcfs, nis, sbc_r = [], [], [], [], [], []
+    ocfs5, nis5, roes, own_m = [], [], [], []
     for y in ys:
         rev, op, ni = g(y, "revenue"), g(y, "op_income"), g(y, "net_income")
         fcf = g(y, "ocf") - g(y, "capex") if g(y, "ocf") is not None and g(y, "capex") is not None else None
@@ -265,8 +287,18 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
         if roic is not None and not -1 < roic < 2:
             roic = None
         om = op / rev if (op is not None and rev and rev > 0) else None
+        # Ertragskraft vor Wachstumsinvestitionen ("Owner Earnings"): Investitionen über den Abschreibungen
+        # gelten als Wachstum, nicht als Erhalt -> operativer Cashflow minus min(Investitionen, Abschreibungen)
+        own = None
+        if g(y, "ocf") is not None and g(y, "capex") is not None:
+            maint = min(g(y, "capex"), g(y, "da")) if g(y, "da") is not None else g(y, "capex")
+            own = g(y, "ocf") - maint
+        eq = g(y, "equity")
+        roe = ni / eq if (ni is not None and eq and eq > 0) else None
+        if roe is not None and not -1 < roe < 1.5:
+            roe = None
         row = {"fy_end": y["fy_end"], "revenue": rev, "op_margin": om, "eps": g(y, "eps"), "fcf": fcf,
-               "roic": roic, "shares": g(y, "shares"), "net_income": ni}
+               "owner_fcf": own, "roic": roic, "roe": roe, "shares": g(y, "shares"), "net_income": ni}
         table.append(row)
         if y in last5:
             if om is not None:
@@ -280,6 +312,13 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
                 nis.append(ni)
             if g(y, "sbc") is not None and rev and rev > 0:
                 sbc_r.append(g(y, "sbc") / rev)
+            if g(y, "ocf") is not None and ni is not None:
+                ocfs5.append(g(y, "ocf"))
+                nis5.append(ni)
+            if roe is not None:
+                roes.append(roe)
+            if own is not None and rev and rev > 0:
+                own_m.append(own / rev)
 
     out["op_margin_avg5"] = st.mean(margins) if len(margins) >= 3 else None
     # Stabilität = Schwankung UM DEN TREND (Residuen einer linearen Regression), nicht die reine
@@ -302,6 +341,20 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
     if out["cash_conversion"] is not None and not -3 < out["cash_conversion"] < 5:
         out["cash_conversion"] = None
     out["sbc_rev"] = st.mean(sbc_r) if len(sbc_r) >= 2 else None
+    # Gewinnqualität: operativer Cashflow / Nettogewinn über 5 J. (unabhängig von Investitionsphasen)
+    out["ocf_conversion"] = sum(ocfs5) / sum(nis5) if len(ocfs5) >= 3 and sum(nis5) > 0 else None
+    if out["ocf_conversion"] is not None and not 0 < out["ocf_conversion"] < 6:
+        out["ocf_conversion"] = None
+    out["roe_med5"] = st.median(roes) if len(roes) >= 3 else None
+    out["roe_std5"] = st.pstdev(roes) if len(roes) >= 3 else None
+    out["owner_margin_med5"] = st.median(own_m) if len(own_m) >= 3 else None
+    out["owner_margin_last"] = own_m[-1] if own_m else None
+    # Werte je Aktie im letzten Geschäftsjahr (Berichtswährung der Historie) für die Bewertung
+    last = table[-1]
+    sh_last = g(ys[-1], "shares")
+    out["rev_ps_last"] = last["revenue"] / sh_last if last["revenue"] and sh_last else None
+    out["owner_ps_last"] = last["owner_fcf"] / sh_last if last["owner_fcf"] is not None and sh_last else None
+    out["sbc_ps_last"] = g(ys[-1], "sbc") / sh_last if g(ys[-1], "sbc") is not None and sh_last else None
     # Nachgewiesene Zyklik: stärkster Umsatzrückgang gegenüber Vorjahr in der verfügbaren Historie (bis 10 J.)
     revs = [g(y, "revenue") for y in ys]
     chg = [b / a - 1 for a, b in zip(revs, revs[1:]) if a and b and a > 0]

@@ -24,7 +24,7 @@ REVENUE_CONCEPTS = [
     "RevenueFromContractWithCustomerIncludingAssessedTax",
 ]
 TOLERANCE = 0.05
-CACHE_VERSION = 4  # 4: speichert zusätzlich die 10-Jahres-Historie
+CACHE_VERSION = 5  # 4: 10-Jahres-Historie, 5: zusätzlich Abschreibungen
 SPLIT_FACTORS = (2, 3, 4, 5, 8, 10, 15, 20, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 8, 1 / 10, 1 / 15, 1 / 20)
 
 

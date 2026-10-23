@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import digest, fetch, history, metrics, scoring, sec, technicals, targets, tracking, universe
+from . import digest, fetch, history, quality, valuation, metrics, scoring, sec, technicals, targets, tracking, universe
 
 log = logging.getLogger("screener")
 MAX_INFO_AGE_DAYS = 10
@@ -226,6 +226,19 @@ def main(argv=None):
             r["eps_norm_trading"] = h["eps_norm5"] * fx[hist_cur] / fx[cur]
         else:
             r["pe_norm"] = r["eps_norm_trading"] = None
+        # Je-Aktie-Werte aus der Historie in Handelswährung (für den fairen Wert)
+        conv = fx[hist_cur] / fx[cur] if (cur in fx and hist_cur in fx) else None
+        for k_in, k_out in (("rev_ps_last", "rev_ps_trading"), ("owner_ps_last", "owner_ps_trading"),
+                            ("sbc_ps_last", "sbc_ps_trading")):
+            r[k_out] = h[k_in] * conv if (conv and h.get(k_in) is not None) else None
+        # Plausibilität: Umsatz je Aktie aus der Historie vs. Yahoo (Umsatz 12 M. / Aktien der gehandelten Gattung).
+        # Weicht er mehr als Faktor 2 ab (andere Aktiengattung, Einheitenfehler), werden die Je-Aktie-Werte verworfen.
+        fin_cur = r.get("financial_currency")
+        if r.get("rev_ps_trading") and r.get("revenue_fin") and r.get("shares_out") and fin_cur in fx and cur in fx:
+            y_rev_ps = r["revenue_fin"] / r["shares_out"] * fx[fin_cur] / fx[cur]
+            if not 0.5 < r["rev_ps_trading"] / y_rev_ps < 2:
+                r["rev_ps_trading"] = r["owner_ps_trading"] = r["sbc_ps_trading"] = None
+                r["flags"].append("historie_je_aktie_unplausibel")
         table = h.pop("hist_table", [])
         r.update(h)
         r["hist_source"] = source if h.get("hist_years", 0) >= 3 else None
@@ -252,7 +265,6 @@ def main(argv=None):
     df = df.join(sc)
     df["flags"] = [f + x for f, x in zip(df["flags"], df["extra_flags"])]
     df = df.drop(columns=["extra_flags"])
-    sector_pe = df.groupby("sector")["pe_fwd"].median().to_dict()
 
     # --- Historie & Score-Veränderung ---
     hist = _load(state / "history.json", {})
@@ -273,11 +285,16 @@ def main(argv=None):
     for s, r in df.iterrows():
         d = r.to_dict()
         d["symbol"] = s
-        d["pillars"] = {n: d.pop(f"p_{n}") for n in scoring.PILLARS}
+        pct_pillars = {n: d.pop(f"p_{n}") for n in scoring.PILLARS}
+        # Anzeige-Säulen: Qualität und Bewertung absolut (Qualitäts-Score, Preis-Score), übrige als Perzentil-Info
+        d["pillars"] = {"Qualität": d.get("q_score"), "Bewertung": d.get("price_score"),
+                        "Wachstum": (d.get("q_components") or {}).get("Wachstum"),
+                        "Revisionen": pct_pillars.get("Revisionen"), "Trend": pct_pillars.get("Trend"),
+                        "Analysten": pct_pillars.get("Analysten")}
         if not isinstance(d.get("sec"), dict):
             d.pop("sec", None)
         d.update(scoring.assess(d, prev_verdicts.get(s)))
-        d["targets"] = targets.model_targets(d, sector_pe.get(d.get("sector")))
+        d["targets"] = None   # ersetzt durch d["valuation"] (fairer Wert, Kaufkurs, Szenarien)
         d["score_chg_1w"] = change(s, 7)
         d["score_chg_1m"] = change(s, 30)
         d["spark"] = [x[1] for x in hist.get(s, [])[-60:]]
@@ -299,9 +316,9 @@ def main(argv=None):
 
     # --- Erfolgskontrolle (wöchentliche Kohorten, Rendite gegen Universum und Indizes) ---
     track = _load(state / "tracking.json", {})
-    track = tracking.snapshot(track, now.date(), out_rows)
+    track = tracking.snapshot(track, now.date(), out_rows, scoring.MODEL_VERSION)
     _save(state / "tracking.json", track)
-    track_eval = tracking.evaluate(track, {k: v["Close"] for k, v in prices.items()})
+    track_eval = tracking.evaluate(track, {k: v["Close"] for k, v in prices.items()}, scoring.MODEL_VERSION)
 
     meta = {
         "generated_at": now.isoformat(timespec="seconds"),
@@ -315,6 +332,9 @@ def main(argv=None):
         "hist_sources": {src: sum(1 for r in out_rows if r.get("hist_source") == src)
                          for src in ("SEC 10-K", "Yahoo-Jahresabschlüsse")},
         "price_date_max": max((r["last_date"] for r in out_rows), default=None),
+        "model": {"version": scoring.MODEL_VERSION, "w_quality": scoring.W_QUALITY, "w_price": scoring.W_PRICE,
+                  "quality_weights": quality.WEIGHTS, "quality_weights_fin": quality.WEIGHTS_FIN,
+                  "r_base": valuation.R_BASE, "r_fin": valuation.R_FIN, "g_max": valuation.G_MAX},
         "pillars": {n: {"weight": p["weight"], "in_score": p["in_score"],
                         "metrics": [[m, scoring.LABELS[m], hb] for m, hb in p["metrics"]]}
                     for n, p in scoring.PILLARS.items()},
