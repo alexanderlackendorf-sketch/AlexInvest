@@ -19,7 +19,7 @@ import pandas as pd
 from . import fetch
 
 log = logging.getLogger(__name__)
-HIST_VERSION = 2  # 2: zusätzlich Abschreibungen (für Ertragskraft vor Wachstumsinvestitionen)
+HIST_VERSION = 3  # 2: Abschreibungen, 3: Bilanzposten für Piotroski/Altman/Beneish
 MAX_YEARS = 10
 
 # --- SEC: Konzepte je Größe (erstes vorhandenes gewinnt, Umsatz: größter Wert je Stichtag) ---
@@ -40,6 +40,9 @@ SEC_DURATION = {
     "tax": (["IncomeTaxExpenseBenefit"], "USD", "first"),
     "da": (["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
             "DepreciationAmortizationAndAccretionNet", "Depreciation"], "USD", "first"),
+    "gross_profit": (["GrossProfit"], "USD", "first"),
+    "cost_rev": (["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"], "USD", "first"),
+    "sga": (["SellingGeneralAndAdministrativeExpense"], "USD", "first"),
 }
 SEC_INSTANT = {
     "equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
@@ -47,6 +50,13 @@ SEC_INSTANT = {
     "debt_current": ["LongTermDebtCurrent", "DebtCurrent"],
     "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
     "goodwill": ["Goodwill"],
+    "assets": ["Assets"],
+    "assets_cur": ["AssetsCurrent"],
+    "liab_cur": ["LiabilitiesCurrent"],
+    "liabilities": ["Liabilities"],
+    "retained": ["RetainedEarningsAccumulatedDeficit"],
+    "receivables": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
+    "ppe": ["PropertyPlantAndEquipmentNet"],
 }
 
 
@@ -187,6 +197,16 @@ Y_ROWS = {
     "capex": ("cf", ["Capital Expenditure"]),
     "da": ("cf", ["Depreciation And Amortization", "Depreciation Amortization Depletion"]),
     "sbc": ("cf", ["Stock Based Compensation"]),
+    "gross_profit": ("is", ["Gross Profit"]),
+    "cost_rev": ("is", ["Cost Of Revenue", "Reconciled Cost Of Revenue"]),
+    "sga": ("is", ["Selling General And Administration"]),
+    "assets": ("bs", ["Total Assets"]),
+    "assets_cur": ("bs", ["Current Assets"]),
+    "liab_cur": ("bs", ["Current Liabilities"]),
+    "liabilities": ("bs", ["Total Liabilities Net Minority Interest"]),
+    "retained": ("bs", ["Retained Earnings"]),
+    "receivables": ("bs", ["Accounts Receivable", "Receivables"]),
+    "ppe": ("bs", ["Net PPE"]),
     "equity": ("bs", ["Stockholders Equity", "Common Stock Equity"]),
     "debt": ("bs", ["Total Debt"]),
     "cash": ("bs", ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"]),
@@ -280,6 +300,7 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
 
     table = []
     margins, fcf_m, roics, fcfs, nis, sbc_r = [], [], [], [], [], []
+    neg_ic_profit = False
     ocfs5, nis5, roes, own_m, roics_x = [], [], [], [], []
     for y in ys:
         rev, op, ni = g(y, "revenue"), g(y, "op_income"), g(y, "net_income")
@@ -291,6 +312,10 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
         if g(y, "equity") is not None and g(y, "debt") is not None and g(y, "cash") is not None:
             ic = g(y, "equity") + g(y, "debt") - g(y, "cash")
         roic = op * (1 - tax_rate) / ic if (op is not None and tax_rate is not None and ic and ic > 0) else None
+        # Negatives investiertes Kapital bei Gewinn (Rückkäufe über Schulden, z.B. Booking, McDonald's):
+        # ROIC rechnerisch undefiniert, wirtschaftlich sehr hoch
+        if y is ys[-1]:
+            neg_ic_profit = ic is not None and ic <= 0 and op is not None and op > 0
         if roic is not None and not -1 < roic < 2:
             roic = None
         # ROIC ohne Goodwill: Übernahmeaufschläge drücken den ROIC, sagen aber wenig über das Geschäft selbst
@@ -352,6 +377,7 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
     out["fcf_pos_share"] = sum(1 for x in fcf_m if x > 0) / len(fcf_m) if len(fcf_m) >= 3 else None
     out["roic_med5"] = st.median(roics) if len(roics) >= 3 else None
     out["roic_last"] = table[-1]["roic"]
+    out["ic_negative_profitable"] = neg_ic_profit
     out["cash_conversion"] = (sum(fcfs) / sum(nis) if len(fcfs) >= 3 and sum(nis) > 0 else None)
     if out["cash_conversion"] is not None and not -3 < out["cash_conversion"] < 5:
         out["cash_conversion"] = None
@@ -364,6 +390,9 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
     out["roic_ex_gw_med5"] = st.median(roics_x) if len(roics_x) >= 3 else None
     out["roe_std5"] = st.pstdev(roes) if len(roes) >= 3 else None
     out["owner_margin_med5"] = st.median(own_m) if len(own_m) >= 3 else None
+    # Ganzer Zyklus (bis 10 J.) für Zykliker: der 5-Jahres-Median enthält derzeit den Rohstoff-Boom 2022
+    own_all = [r["owner_fcf"] / r["revenue"] for r in table if r["owner_fcf"] is not None and r["revenue"] and r["revenue"] > 0]
+    out["owner_margin_med10"] = st.median(own_all) if len(own_all) >= 7 else None
     out["owner_margin_last"] = own_m[-1] if own_m else None
     # Werte je Aktie im letzten Geschäftsjahr (Berichtswährung der Historie) für die Bewertung
     last = table[-1]
@@ -396,5 +425,136 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
                 if 0 < pe < 300:
                     pes.append(pe)
     out["pe_hist_med5"] = st.median(pes) if len(pes) >= 3 else None
+    # Historische Owner-Earnings-Rendite (nach Aktienvergütung) je Geschäftsjahresende -> "billig gegenüber
+    # der eigenen Geschichte?"
+    oys = []
+    if same_currency and close is not None:
+        for y, row in zip(ys, table):
+            p, sh = _price_at(close, y["fy_end"]), g(y, "shares")
+            if p and sh and row["owner_fcf"] is not None:
+                oys.append((row["owner_fcf"] - (g(y, "sbc") or 0.0)) / sh / p)
+    out["owner_yield_hist_med"] = st.median(oys) if len(oys) >= 3 else None
+    out["owner_yield_hist_n"] = len(oys)
+    out.update(forensics(ys))
     out["hist_table"] = table[-MAX_YEARS:]
+    return out
+
+
+# --- Bilanz-Forensik (letztes Geschäftsjahr gegen Vorjahr) ---
+def _gp(y):
+    gp = y.get("gross_profit")
+    if gp is None and y.get("revenue") is not None and y.get("cost_rev") is not None:
+        gp = y["revenue"] - y["cost_rev"]
+    return gp
+
+
+def _ratio(a, b):
+    return a / b if (a is not None and b not in (None, 0)) else None
+
+
+def piotroski(cur: dict, prev: dict) -> tuple[int | None, int, list[list]]:
+    """F-Score nach Piotroski (2000): 9 Prüfungen zu Ertrag, Finanzierung und Effizienz.
+    Fehlen Posten, wird über die vorhandenen Prüfungen hochgerechnet (mind. 6 nötig)."""
+    def roa(y):
+        return _ratio(y.get("net_income"), y.get("assets"))
+
+    def lev(y):
+        return _ratio(y.get("debt") or 0.0, y.get("assets")) if y.get("assets") else None
+
+    def cr(y):
+        return _ratio(y.get("assets_cur"), y.get("liab_cur"))
+
+    def gm(y):
+        return _ratio(_gp(y), y.get("revenue"))
+
+    def turn(y):
+        return _ratio(y.get("revenue"), y.get("assets"))
+
+    def cmp(a, b, better):
+        return None if a is None or b is None else (a > b if better == "up" else a < b or (a == 0 and b == 0))
+
+    tests = [
+        ("Gesamtkapitalrendite positiv", None if roa(cur) is None else roa(cur) > 0),
+        ("Operativer Cashflow positiv", None if cur.get("ocf") is None else cur["ocf"] > 0),
+        ("Gesamtkapitalrendite gestiegen", cmp(roa(cur), roa(prev), "up")),
+        ("Cashflow über Gewinn", None if cur.get("ocf") is None or cur.get("net_income") is None
+         else cur["ocf"] > cur["net_income"]),
+        ("Verschuldungsgrad gesunken", cmp(lev(cur), lev(prev), "down")),
+        ("Liquidität (Current Ratio) gestiegen", cmp(cr(cur), cr(prev), "up")),
+        ("Keine neuen Aktien", None if not cur.get("shares") or not prev.get("shares")
+         else cur["shares"] <= prev["shares"] * 1.005),
+        ("Bruttomarge gestiegen", cmp(gm(cur), gm(prev), "up")),
+        ("Kapitalumschlag gestiegen", cmp(turn(cur), turn(prev), "up")),
+    ]
+    avail = [t for t in tests if t[1] is not None]
+    if len(avail) < 6:
+        return None, len(avail), [[n, v] for n, v in tests]
+    passed = sum(1 for _, v in avail if v)
+    return round(passed * 9 / len(avail)), len(avail), [[n, v] for n, v in tests]
+
+
+def altman_z2(y: dict) -> float | None:
+    """Altman Z'' (1995, für Nicht-Produzenten und ohne Börsenwert): 6,56·X1 + 3,26·X2 + 6,72·X3 + 1,05·X4.
+    X1 Working Capital, X2 Gewinnrücklagen, X3 EBIT (je / Bilanzsumme), X4 Eigenkapital / Verbindlichkeiten.
+    < 1,1 Gefahrenzone, 1,1-2,6 Grauzone, > 2,6 sicher."""
+    ta = y.get("assets")
+    if not ta or ta <= 0:
+        return None
+    ca, cl, re_, ebit, eq = y.get("assets_cur"), y.get("liab_cur"), y.get("retained"), y.get("op_income"), y.get("equity")
+    tl = y.get("liabilities")
+    if tl is None and eq is not None:
+        tl = ta - eq
+    if None in (ca, cl, re_, ebit, eq, tl) or tl <= 0:
+        return None
+    x4 = max(-5.0, min(10.0, eq / tl))
+    return 6.56 * (ca - cl) / ta + 3.26 * re_ / ta + 6.72 * ebit / ta + 1.05 * x4
+
+
+def beneish_m(cur: dict, prev: dict) -> float | None:
+    """Beneish M-Score (1999, 8 Variablen). > -1,78 gilt als auffällig (Hinweis auf Bilanzkosmetik).
+    Schnell wachsende Firmen werden oft fälschlich auffällig (Umsatzwachstum ist eine Variable)."""
+    def need(y, *k):
+        return all(y.get(x) is not None for x in k)
+    if not (need(cur, "receivables", "revenue", "assets_cur", "ppe", "assets", "net_income", "ocf")
+            and need(prev, "receivables", "revenue", "assets_cur", "ppe", "assets")):
+        return None
+    gp_c, gp_p = _gp(cur), _gp(prev)
+    if gp_c is None or gp_p is None or min(cur["revenue"], prev["revenue"], cur["assets"], prev["assets"]) <= 0:
+        return None
+    clip = lambda x: 1.0 if x is None else max(0.2, min(5.0, x))
+    dsri = clip(_ratio(cur["receivables"] / cur["revenue"], prev["receivables"] / prev["revenue"]))
+    gmi = clip(_ratio(gp_p / prev["revenue"], gp_c / cur["revenue"]))
+    aq = lambda y: 1 - (y["assets_cur"] + y["ppe"]) / y["assets"]
+    aqi = clip(_ratio(aq(cur), aq(prev)))
+    sgi = clip(cur["revenue"] / prev["revenue"])
+    dep = lambda y: _ratio(y.get("da"), (y.get("da") or 0) + y["ppe"]) if y.get("da") is not None else None
+    depi = clip(_ratio(dep(prev), dep(cur)))
+    sga = lambda y: _ratio(y.get("sga"), y["revenue"])
+    sgai = clip(_ratio(sga(cur), sga(prev)))
+    lv = lambda y: _ratio((y.get("liab_cur") or 0) + (y.get("debt") or 0), y["assets"])
+    lvgi = clip(_ratio(lv(cur), lv(prev)))
+    tata = (cur["net_income"] - cur["ocf"]) / cur["assets"]
+    return (-4.84 + 0.92 * dsri + 0.528 * gmi + 0.404 * aqi + 0.892 * sgi + 0.115 * depi
+            - 0.172 * sgai + 4.679 * tata - 0.327 * lvgi)
+
+
+def forensics(ys: list[dict]) -> dict:
+    out = {"f_score": None, "f_score_n": 0, "f_score_tests": [], "altman_z2": None, "beneish_m": None,
+           "accruals": None, "gross_prof": None}
+    if not ys:
+        return out
+    cur = ys[-1]
+    ta = cur.get("assets")
+    gp = _gp(cur)
+    if gp is not None and ta and ta > 0:
+        out["gross_prof"] = gp / ta
+    if cur.get("net_income") is not None and cur.get("ocf") is not None and ta and ta > 0:
+        prev_ta = ys[-2].get("assets") if len(ys) >= 2 else None
+        avg_ta = (ta + prev_ta) / 2 if prev_ta else ta
+        out["accruals"] = (cur["net_income"] - cur["ocf"]) / avg_ta   # Sloan (1996): hoch = Gewinn ohne Cash
+    out["altman_z2"] = altman_z2(cur)
+    if len(ys) >= 2:
+        f, n, tests = piotroski(cur, ys[-2])
+        out.update({"f_score": f, "f_score_n": n, "f_score_tests": tests})
+        out["beneish_m"] = beneish_m(cur, ys[-2])
     return out

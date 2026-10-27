@@ -6,11 +6,13 @@ abhängt (Software ~30 %, Handel ~5 % sind beide "normal").
 
 Komponenten (Unternehmen / Bank-ähnliche Finanzwerte):
   Rentabilität   ROIC Median 5 J. (Kapitalkosten ~8-9 %)        / ROE Median 5 J.
+  Bruttoprofit.  Bruttogewinn / Bilanzsumme (Novy-Marx 2013)       / -
   Margen         operative Marge, Perzentil in der Vergleichsgruppe / -
   Stabilität     Margen-Schwankung um den Trend, Verlustjahre     / ROE-Schwankung, Verlustjahre
-  Gewinnqualität operativer Cashflow / Gewinn (5 J.)              / -
+  Gewinnqualität operativer Cashflow / Gewinn (5 J.) und Accruals  / -
   Bilanz         Nettoverschuldung / EBITDA                       / -
-  Wachstum       Umsatz-CAGR 5 J.                                 / Umsatz-CAGR 5 J.
+  Wachstum       Umsatz-CAGR (niedrigerer Wert aus 5 und 10 J.)   / dito
+  F-Score        Piotroski: 9 Prüfungen zur Entwicklung im letzten Jahr / -
   Zu-/Abschläge  Verwässerung durch neue Aktien, Rückkäufe, steigender/fallender Margen-Trend
 """
 from __future__ import annotations
@@ -36,9 +38,12 @@ ROE_STAB_PTS = [(0.01, 10), (0.025, 8), (0.04, 6), (0.07, 3), (0.12, 0)]
 OCF_PTS = [(0.5, 0), (0.7, 3), (0.9, 6), (1.05, 8.5), (1.2, 10)]
 LEV_PTS = [(-1.0, 10), (0.0, 9.5), (1.0, 8), (2.0, 6), (3.0, 4), (4.0, 2), (5.0, 0)]
 GROWTH_PTS = [(-0.05, 0), (0.0, 3), (0.04, 5), (0.08, 6.5), (0.12, 8), (0.20, 9.5), (0.30, 10)]
+GP_PTS = [(0.05, 1), (0.15, 4), (0.25, 6), (0.35, 8), (0.50, 10)]          # Bruttogewinn / Bilanzsumme
+ACCR_PTS = [(-0.10, 10), (-0.05, 8.5), (0.0, 6), (0.05, 3), (0.10, 0)]      # (Gewinn - op. Cashflow) / Bilanzsumme
+F_PTS = [(2, 0), (4, 3), (6, 6.5), (8, 9), (9, 10)]
 
-WEIGHTS = {"Rentabilität": 0.30, "Margen": 0.15, "Stabilität": 0.15, "Gewinnqualität": 0.10,
-           "Bilanz": 0.15, "Wachstum": 0.15}
+WEIGHTS = {"Rentabilität": 0.25, "Bruttoprofitabilität": 0.10, "Margen": 0.10, "Stabilität": 0.15,
+           "Gewinnqualität": 0.10, "Bilanz": 0.10, "Wachstum": 0.10, "F-Score": 0.10}
 WEIGHTS_FIN = {"Rentabilität": 0.45, "Stabilität": 0.30, "Wachstum": 0.25}
 MIN_COMPONENTS = 3
 MIN_COMPONENTS_FIN = 2   # Banken/Versicherer haben weniger anwendbare Komponenten
@@ -66,6 +71,8 @@ def components(r: dict, margin_pct: float | None) -> dict[str, float | None]:
         if roic is None and _v(r.get("roic_ttm_est")) is not None:
             roic = _v(r["roic_ttm_est"]) * 0.9   # nur ein Jahr und geschätzte Steuerquote -> vorsichtiger
         rent = scale(roic, ROIC_PTS) if roic is not None else scale(_v(r.get("roe")), ROE_FALLBACK_PTS)
+        if roic is None and r.get("ic_negative_profitable"):
+            rent = 9.0   # Gewinn auf negativem Kapital: Rendite sehr hoch, aber nicht messbar
         rx = scale(_v(r.get("roic_ex_gw_med5")), ROIC_PTS)
         if rent is not None and rx is not None and _v(r.get("roic_med5")) is not None:
             rent = (rent + rx) / 2   # Mittel aus ROIC mit und ohne Goodwill
@@ -75,10 +82,16 @@ def components(r: dict, margin_pct: float | None) -> dict[str, float | None]:
         if st is not None and loss_years:
             st = max(0.0, st - 1.5 * loss_years)
         c["Stabilität"] = st
-        c["Gewinnqualität"] = scale(_v(r.get("ocf_conversion")), OCF_PTS)
+        gq = [x for x in (scale(_v(r.get("ocf_conversion")), OCF_PTS), scale(_v(r.get("accruals")), ACCR_PTS))
+              if x is not None]
+        c["Gewinnqualität"] = sum(gq) / len(gq) if gq else None
+        c["Bruttoprofitabilität"] = scale(_v(r.get("gross_prof")), GP_PTS)
+        c["F-Score"] = scale(_v(r.get("f_score")), F_PTS)
         nd = _v(r.get("net_debt_ebitda"))
         c["Bilanz"] = scale(nd, LEV_PTS)
     g = _v(r.get("rev_cagr"))
+    if g is not None and _v(r.get("rev_cagr_long")) is not None:
+        g = min(g, r["rev_cagr_long"])   # Corona-Basiseffekt (Start 2020/21) nicht als Wachstum werten
     if g is None and _v(r.get("rev_growth")) is not None:
         g = _v(r["rev_growth"]) * 0.7   # nur Quartal gegen Vorjahr -> gedämpft
     c["Wachstum"] = scale(g, GROWTH_PTS)
@@ -103,6 +116,10 @@ def adjustments(r: dict) -> list[tuple[str, float]]:
             adj.append(("Marge fällt > 2 Pp. p.a.", -0.7))
     if r.get("loss_making"):
         adj.append(("aktuell Verlust", -1.0))
+    if r.get("cyclical_evidenced"):
+        # Preisnehmer haben keinen dauerhaften Wettbewerbsvorteil; hohe Renditen sind oft Zyklus, nicht Burggraben
+        adj.append(("Rohstoff-Preisnehmer (Zyklus)", -1.0) if r.get("sector") in ("Energy", "Basic Materials")
+                   else ("zyklisches Geschäft (belegter Umsatzeinbruch)", -0.5))
     return adj
 
 

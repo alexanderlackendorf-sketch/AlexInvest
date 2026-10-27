@@ -264,3 +264,8 @@ ul.news { margin: 0; padding-left: 16px; font-size: 12.5px; }
 ul.news li { margin-bottom: 6px; }
 details.summary summary { cursor: pointer; font-size: 12px; color: var(--accent-ink); margin-top: 8px; }
 details.summary p { line-height: 1.5; color: var(--text-secondary); }
+
+/* Modell 3: drei Profi-Methoden */
+.lenses { display: flex; flex-direction: column; gap: 6px; }
+.lens { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.lens b { font-size: 13px; }

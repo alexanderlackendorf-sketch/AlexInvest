@@ -118,43 +118,73 @@ class MetricsTest(unittest.TestCase):
 
 
 class RulesTest(unittest.TestCase):
-    """Modell 2: absolute Qualität, fairer Wert, Kaufkurs, Urteil."""
+    """Modell 3: Rating, Deckel, Urteil über erwartete Rendite und Kaufkurs."""
 
-    def _row(self, q, fv, price=100.0, mos=0.10, flags=(), prev=None, zone=False):
+    def _row(self, q, er, hurdle=0.10, price=100.0, buy=None, flags=(), prev=None, zone=False, unc="mittel"):
+        if buy is None:
+            buy = price * (1.1 if er is not None and er >= hurdle else 0.9)
         r = {"q_score": q, "price_score": 6.0, "price": price, "currency": "USD", "coverage": 1.0,
              "flags": list(flags), "trend": "Aufwärtstrend", "dist_sma200": 0.05, "in_buy_zone": zone,
              "buy_zones": [], "earnings_in_days": 3, "q_components": {"Wachstum": 6.0},
-             "valuation": {"fair_value": fv, "buy_price": fv * (1 - mos) if fv else None}}
+             "valuation": {"er": er, "hurdle": hurdle, "buy_price": buy if er is not None else None,
+                           "fair_value": 120.0 if er is not None else None, "uncertainty": unc}}
         return scoring.assess(r, prev)
 
     def test_verdict_matrix(self):
-        self.assertEqual(self._row(8.0, 130)["verdict_code"], "kandidat")          # Kurs 100 <= Kaufkurs 117
-        self.assertEqual(self._row(8.0, 105)["verdict_code"], "beobachten")        # unter fairem Wert
-        self.assertEqual(self._row(8.0, 80)["verdict_code"], "beobachten_teuer")   # zu teuer
-        self.assertIn("Kaufkurs", self._row(8.0, 80)["verdict"])
-        self.assertEqual(self._row(6.0, 150, mos=0.2)["verdict_code"], "beobachten")
-        self.assertEqual(self._row(6.0, 95)["verdict_code"], "neutral")
-        self.assertEqual(self._row(6.0, 70)["verdict_code"], "meiden_teuer")
-        self.assertEqual(self._row(3.0, 200, mos=0.3)["verdict_code"], "meiden")   # Value-Falle möglich
-        self.assertEqual(self._row(3.0, 80)["verdict_code"], "meiden_schwach")
-        self.assertEqual(self._row(None, 130)["verdict_code"], "nab")
+        self.assertEqual(self._row(8.0, 0.12)["verdict_code"], "kandidat")
+        self.assertEqual(self._row(8.0, 0.09, buy=95.0)["verdict_code"], "beobachten")   # ≤ 10 % über Kaufkurs
+        self.assertEqual(self._row(8.0, 0.06)["verdict_code"], "beobachten_teuer")
+        self.assertIn("Kaufkurs", self._row(8.0, 0.06)["verdict"])
+        self.assertEqual(self._row(8.0, 0.12, flags=["bilanz_warnsignal"])["verdict_code"], "beobachten")
+        self.assertEqual(self._row(8.0, 0.12, unc="sehr hoch")["verdict_code"], "beobachten")
+        self.assertEqual(self._row(6.0, 0.14, hurdle=0.12)["verdict_code"], "beobachten")
+        self.assertEqual(self._row(6.0, 0.09, hurdle=0.12)["verdict_code"], "neutral")
+        self.assertEqual(self._row(6.0, 0.05, hurdle=0.12)["verdict_code"], "meiden_teuer")
+        self.assertEqual(self._row(3.0, 0.20, hurdle=0.14)["verdict_code"], "meiden")   # Value-Falle möglich
+        self.assertEqual(self._row(3.0, 0.05, hurdle=0.14)["verdict_code"], "meiden_schwach")
+        self.assertEqual(self._row(None, 0.12)["verdict_code"], "nab")
+        self.assertEqual(self._row(8.0, None)["verdict_code"], "beobachten")
 
     def test_buy_price_hysteresis(self):
-        # Kaufkurs 99 (fv 110, 10 %): Kurs 100 knapp darüber -> nur als bisheriger Kandidat noch Kandidat
-        self.assertEqual(self._row(8.0, 110)["verdict_code"], "beobachten")
-        self.assertEqual(self._row(8.0, 110, prev="kandidat")["verdict_code"], "kandidat")
+        # Kaufkurs 99: Kurs 100 knapp darüber -> nur als bisheriger Kandidat noch Kandidat
+        self.assertEqual(self._row(8.0, 0.095, buy=99.0)["verdict_code"], "beobachten")
+        self.assertEqual(self._row(8.0, 0.095, buy=99.0, prev="kandidat")["verdict_code"], "kandidat")
 
     def test_earnings_soon(self):
-        a = self._row(8.0, 130, flags=["zahlen_in_kuerze"], zone=True)
+        a = self._row(8.0, 0.12, flags=["zahlen_in_kuerze"], zone=True)
         self.assertEqual(a["ampeln"]["Einstieg"], "gelb")
         self.assertIn("Zahlen in 3 Tagen", a["verdict"])
         self.assertEqual(a["ampeln"]["Daten"], "gruen")
 
     def test_total_score(self):
-        self.assertAlmostEqual(scoring.total_score(8.0, 6.0, {}), 7.1)
-        self.assertEqual(scoring.total_score(3.0, 10.0, {}), 4.5)        # schwache Qualität gedeckelt
-        self.assertAlmostEqual(scoring.total_score(8.0, None, {}), 6.4)  # Bewertung unbekannt -> neutral
-        self.assertIsNone(scoring.total_score(None, 8.0, {}))
+        sc, caps = scoring.total_score(8.0, 7.0, 6.0, 6.0, {"er": 0.10}, False)
+        self.assertAlmostEqual(sc, 7.1)                                        # 40/35/15/10
+        self.assertEqual(caps, [])
+        sc, caps = scoring.total_score(3.0, 10.0, 10.0, 10.0, {"er": 0.20}, False)
+        self.assertEqual(sc, 4.0)
+        self.assertIn("Qualität < 4", caps)
+        self.assertEqual(scoring.total_score(9.0, 10.0, 10.0, 10.0, {"er": 0.20}, True)[0], 4.0)   # Warnsignal
+        self.assertEqual(scoring.total_score(9.0, 9.0, 9.0, 9.0, {"er": 0.06}, False)[0], 6.0)     # Rendite < 8 %
+        self.assertEqual(scoring.total_score(9.0, None, 9.0, 9.0, {}, False)[0], 6.0)              # keine Bewertung
+        self.assertIsNone(scoring.total_score(None, 8.0, 5.0, 5.0, {}, False)[0])
+
+    def test_red_flags(self):
+        self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 1.0}), [])   # Altman allein reicht nicht
+        self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 5.0, "f_score": 3})[0][0], "schieflage")
+        self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 5.0, "f_score": 7}), [])
+        self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "loss_making": True, "sector": "Utilities"}), [])
+        self.assertEqual(scoring.total_score(9.0, 9.0, 9.0, 9.0, {"er": 0.2}, {"gewinnqualitaet"})[0], 6.0)
+        self.assertEqual(scoring.red_flags({"beneish_m": -1.0, "accruals": 0.0}), [])         # Beneish allein reicht nicht
+        self.assertTrue(scoring.red_flags({"beneish_m": -1.0, "accruals": 0.07}))
+        self.assertTrue(scoring.red_flags({"accruals": 0.12}))
+        self.assertEqual(scoring.red_flags({"accruals": 0.12, "is_financial": True}), [])
+
+    def test_lenses(self):
+        v = {"er": 0.12, "hurdle": 0.10, "fair_value": 150.0, "mos_required": 0.25, "uncertainty": "mittel"}
+        l = scoring.lenses(v, 100.0, 8.0, 0.8, 0.7)
+        self.assertEqual([x["ampel"] for x in l.values()], ["gruen", "gruen", "gruen"])
+        l = scoring.lenses(dict(v, fair_value=110.0, er=0.08), 100.0, 3.0, 0.5, 0.2)
+        self.assertEqual([x["ampel"] for x in l.values()], ["rot", "gelb", "gelb"])
 
     def test_quality_absolute_scale(self):
         great = {"roic_med5": 0.30, "op_margin_std": 0.01, "ocf_conversion": 1.2, "net_debt_ebitda": -0.5,
@@ -185,62 +215,111 @@ class RulesTest(unittest.TestCase):
 
 
 class ValuationModelTest(unittest.TestCase):
-    def test_dcf_and_roll_forward(self):
-        v0 = valuation.dcf(5.0, 0.10, 0.09)
-        flows = valuation.cash_flows(5.0, 0.10)
-        self.assertAlmostEqual(flows[0], 5.5)
-        self.assertAlmostEqual(flows[5], flows[4] * (1 + 0.10 + (0.03 - 0.10) / 5))   # Ausblenden ab Jahr 6
-        v1 = valuation.dcf(5.0, 0.10, 0.09, at_year=1)
-        self.assertAlmostEqual(v1, (v0 - 5.5 / 1.09) * 1.09)   # Wert in 1 Jahr nach Auszahlung
+    """Modell 3: erwartete Rendite (IRR) mit Reinvestition, Reverse-DCF, fairer Wert mit Unsicherheit."""
+
+    def test_path_and_roll_forward(self):
+        flows, _ = valuation._path(5.0, 0.10, 0.25, cap=10)
+        self.assertAlmostEqual(flows[0], 5.0 * 1.10 * (1 - 0.10 / 0.25))   # Wachstum kostet Reinvestition
+        v0 = valuation.value(5.0, 0.10, 0.25, 0.09)
+        v1 = valuation.value(5.0, 0.10, 0.25, 0.09, at_year=1)
+        self.assertAlmostEqual(v1, (v0 - flows[0] / 1.09) * 1.09)
+        self.assertGreater(valuation.value(5.0, 0.10, 0.25, 0.09, cap=15), v0)   # längerer Vorteil = mehr Wert
+
+    def test_irr_and_reverse_dcf_invert_value(self):
+        price = valuation.value(4.0, 0.08, 0.30, 0.11)
+        self.assertAlmostEqual(valuation.irr(price, 4.0, 0.08, 0.30), 0.11, places=4)
+        price = valuation.value(4.0, 0.07, 0.30, valuation.COE)
+        self.assertAlmostEqual(valuation.implied_growth(price, 4.0, 0.30), 0.07, places=4)
+        self.assertIsNone(valuation.implied_growth(price, 4.0, 0.08))   # ROIC < Kapitalkosten
+
+    def test_normalization(self):
+        base = {"price": 100.0, "rev_ps_trading": 50.0, "owner_margin_med5": 0.15, "sbc_ps_trading": 0.5}
+        cf, _ = valuation.base_cash_flow(dict(base, owner_margin_last=0.05), False)
+        self.assertAlmostEqual(cf, 0.15 * 50 - 0.5)                      # Einbruchjahr -> Median
+        cf, _ = valuation.base_cash_flow(dict(base, owner_margin_last=0.25, op_margin_trend=0.03), False)
+        self.assertAlmostEqual(cf, 0.25 * 50 - 0.5)                      # Marge steigt strukturell
+        cf, _ = valuation.base_cash_flow(dict(base, owner_margin_last=0.25), False)
+        self.assertAlmostEqual(cf, 0.20 * 50 - 0.5)
+        cf, _ = valuation.base_cash_flow(dict(base, owner_margin_last=0.25), True)
+        self.assertAlmostEqual(cf, 0.15 * 50 - 0.5)                      # Zykliker: immer Median
+
+    def test_growth(self):
+        r = {"rev_cagr": 0.20, "rev_cagr_long": 0.08, "rev_growth": 0.05}
+        self.assertAlmostEqual(valuation.growth_rate(r), (2 * 0.05 + 0.08) / 3)   # Corona raus, niedrigerer Wert doppelt
+        self.assertAlmostEqual(valuation.growth_rate({"rev_cagr": 0.20, "rev_growth": -0.05}), (2 * -0.05 + 0.20) / 3)
+        self.assertFalse(valuation.growth_conflict(r))
+        self.assertTrue(valuation.growth_conflict({"rev_cagr": 0.25, "rev_growth": 0.02}))
+        self.assertEqual(valuation.growth_rate({"rev_cagr": 0.40}), valuation.G_MAX)
+
+    def test_roic_for(self):
+        self.assertAlmostEqual(valuation.roic_for({"roic_med5": 0.10, "roic_ex_gw_med5": 0.30})[0], 0.20)
+        self.assertAlmostEqual(valuation.roic_for({"roic_med5": 0.10, "roic_ex_gw_med5": 0.30, "roic_last": 0.30})[0], 0.25)
+        self.assertEqual(valuation.roic_for({"ic_negative_profitable": True})[0], valuation.ROIC_MAX)
+        self.assertEqual(valuation.roic_for({})[0], valuation.ROIC_DEFAULT)
+
+    def _company(self, **kw):
+        r = {"price": 100.0, "rev_ps_trading": 40.0, "owner_margin_med5": 0.15, "owner_margin_last": 0.15,
+             "sbc_ps_trading": 0.0, "rev_cagr": 0.08, "rev_growth": 0.08, "roic_med5": 0.25, "hist_years": 10,
+             "op_margin_std": 0.02, "owner_yield_hist_med": 0.05, "owner_yield_hist_n": 5, "flags": []}
+        r.update(kw)
+        return r
 
     def test_fair_value_company(self):
-        r = {"price": 100.0, "fcf_yield": 0.05, "rev_cagr": 0.08, "rev_growth": 0.08, "pe_fwd": 18.0, "eps_fwd": 5.0,
-             "pe_hist_med5": 20.0, "flags": []}
-        v = valuation.fair_value(r, 8.0, 18.0)
-        self.assertEqual(len(v["methods"]), 2)
-        # faires KGV = ½ eigenes 20 + ½ wachstumsgerecht (12 + 8) = 20
-        self.assertAlmostEqual(v["methods"][1]["value"], 100 / 18 * 20, places=1)
-        self.assertAlmostEqual(v["buy_price"], v["fair_value"] * 0.9, places=1)          # Qualität 8 -> 10 %
-        self.assertAlmostEqual(valuation.fair_value(r, 5.0, 18.0)["mos_required"], 0.30)  # schwache Qualität
-        # Investitionsphase: FCF ttm ~0, Owner Earnings hoch -> Owner Earnings zählt
-        r2 = dict(r, fcf_yield=0.005, owner_ps_trading=4.0)
-        self.assertIn("Owner Earnings", valuation.fair_value(r2, 8.0, 18.0)["methods"][0]["detail"])
-
-    def test_extreme_upside_not_valued(self):
-        r = {"price": 10.0, "rev_cagr": 0.08, "rev_growth": 0.08, "pe_fwd": 2.0, "eps_fwd": 5.0, "pe_hist_med5": 20.0,
-             "flags": []}
-        self.assertIsNone(valuation.fair_value(r, 8.0, 18.0)["fair_value"])
-
-    def test_owner_outlier_year_smoothed(self):
-        r = {"price": 100.0, "rev_ps_trading": 50.0, "owner_ps_trading": 2.5, "owner_margin_last": 0.05,
-             "owner_margin_med5": 0.15, "sbc_ps_trading": 0.0}
-        cf, src = valuation.base_cash_flow(r, False)
-        self.assertAlmostEqual(cf, 0.10 * 50)
-        self.assertIn("geglättet", src)
-
-    def test_growth_median_and_conflict(self):
-        r = {"rev_cagr": 0.20, "rev_growth": 0.02, "eps_growth_fwd": -0.15}
-        self.assertAlmostEqual(valuation.growth_rate(r), 0.02)        # Median statt Mittel aus Vergangenheit
-        self.assertTrue(valuation.growth_conflict(r))
-        self.assertFalse(valuation.growth_conflict({"rev_cagr": 0.08, "rev_growth": 0.10}))
-
-    def test_discount_rate_beta(self):
-        low, _ = valuation.discount_rate({"beta": 0.3})
-        high, _ = valuation.discount_rate({"beta": 2.5})
-        self.assertAlmostEqual(low, 0.043 + 0.8 * 0.045, places=4)     # Untergrenze 0,8
-        self.assertAlmostEqual(high, 0.043 + 1.6 * 0.045, places=4)
-        self.assertAlmostEqual(valuation.discount_rate({})[0], 0.085, places=4)
+        r = self._company()
+        v = valuation.fair_value(r, 8.0)
+        self.assertEqual([m["name"] for m in v["methods"]], ["DCF zu Eigenkapitalkosten", "Eigene Bewertungshistorie"])
+        self.assertAlmostEqual(v["methods"][1]["value"], 6.0 / 0.05)
+        self.assertEqual(v["uncertainty"], "gering")
+        self.assertAlmostEqual(v["coe"], 0.08)
+        self.assertAlmostEqual(v["hurdle"], 0.10)                                   # 8 % + 2 Pp.
+        self.assertAlmostEqual(v["buy_price"], valuation.value(6.0, 0.08, 0.25, 0.10, cap=15), places=1)
+        self.assertAlmostEqual(valuation.irr(v["buy_price"], 6.0, 0.08, 0.25, 15), 0.10, places=3)
+        self.assertAlmostEqual(v["hist_ratio"], 0.06 / 0.05)
+        self.assertAlmostEqual(valuation.fair_value(r, 5.0)["hurdle"], 0.12)        # schwache Qualität +4 Pp.
+        shaky = valuation.fair_value(self._company(op_margin_std=0.12, loss_years5=2, hist_years=4), 8.0)
+        self.assertIn(shaky["uncertainty"], ("hoch", "sehr hoch"))
+        self.assertGreater(shaky["coe"], v["coe"])
 
     def test_fair_value_bank(self):
-        r = {"price": 50.0, "is_financial": True, "roe_med5": 0.15, "pb": 1.0, "pe_fwd": 9.0, "eps_fwd": 5.5,
-             "flags": []}
-        v = valuation.fair_value(r, 7.0, 10.0)
-        jpb = (0.15 - 0.03) / (0.10 - 0.03)
-        self.assertAlmostEqual(v["methods"][0]["value"], 50.0 * jpb, places=1)
+        r = {"price": 50.0, "is_financial": True, "roe_med5": 0.15, "pb": 1.0, "rev_cagr": 0.05, "rev_growth": 0.05,
+             "hist_years": 10, "flags": []}
+        v = valuation.fair_value(r, 7.0)
+        self.assertGreaterEqual(v["coe"], 0.10)
+        self.assertAlmostEqual(v["cf0"], 0.15 * 50.0)
+        self.assertEqual(len(v["methods"]), 1)
 
     def test_not_valued(self):
-        self.assertIsNone(valuation.fair_value({"price": 10, "flags": ["zyklik_spitzengewinn"]}, 6, 15)["fair_value"])
-        self.assertIsNone(valuation.fair_value({"price": 10, "flags": [], "fcf_yield": -0.1}, 6, 15)["fair_value"])
+        self.assertIsNone(valuation.fair_value({"price": 10, "flags": ["zyklik_spitzengewinn"]}, 6)["er"])
+        self.assertIsNone(valuation.fair_value({"price": 10, "flags": [], "fcf_yield": -0.1, "rev_cagr": 0.05}, 6)["er"])
+        self.assertIsNone(valuation.fair_value(self._company(price=10.0), 8.0)["er"])   # +1000 % -> Datenfehler
+
+
+class ForensicsTest(unittest.TestCase):
+    Y0 = {"revenue": 100.0, "net_income": 8.0, "ocf": 9.0, "assets": 100.0, "debt": 30.0, "assets_cur": 40.0,
+          "liab_cur": 30.0, "gross_profit": 40.0, "shares": 10.0, "receivables": 10.0, "ppe": 30.0, "da": 5.0,
+          "sga": 20.0, "retained": 30.0, "op_income": 12.0, "equity": 40.0}
+
+    def test_piotroski_all_improving(self):
+        y1 = dict(self.Y0, revenue=120.0, net_income=12.0, ocf=14.0, debt=25.0, assets_cur=50.0, gross_profit=50.0,
+                  shares=9.8, receivables=11.0)
+        f, n, _ = history.piotroski(y1, self.Y0)
+        self.assertEqual((f, n), (9, 9))
+        f, _, _ = history.piotroski(dict(self.Y0, net_income=-5.0, ocf=-1.0, shares=11.0, debt=40.0), self.Y0)
+        self.assertLessEqual(f, 2)
+
+    def test_altman_and_beneish(self):
+        z = history.altman_z2(self.Y0)
+        self.assertAlmostEqual(z, 6.56 * 0.10 + 3.26 * 0.30 + 6.72 * 0.12 + 1.05 * (40 / 60))
+        m = history.beneish_m(self.Y0, self.Y0)        # unverändert: alle Indizes 1
+        self.assertAlmostEqual(m, -4.84 + 0.92 + 0.528 + 0.404 + 0.892 + 0.115 - 0.172 + 4.679 * (-0.01) - 0.327)
+        self.assertIsNone(history.beneish_m({"revenue": 1.0}, self.Y0))
+
+    def test_forensics_in_derive(self):
+        ys = [dict(self.Y0, fy_end=f"20{20 + i}-12-31", capex=4.0) for i in range(4)]
+        d = history.derive(ys)
+        self.assertAlmostEqual(d["gross_prof"], 0.40)
+        self.assertAlmostEqual(d["accruals"], (8.0 - 9.0) / 100.0)
+        self.assertIsNotNone(d["f_score"])
 
 
 class PackageFourTest(unittest.TestCase):
