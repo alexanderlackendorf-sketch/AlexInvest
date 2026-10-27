@@ -106,7 +106,7 @@ CYCLICAL_INDUSTRY_KEYWORDS = ("semiconductor", "auto", "steel", "chemical", "air
 CYCLE_DROP = -0.15
 # Kein Datenproblem -> zählt nicht als Prüfhinweis in der Datenqualität
 WARN_FLAG_EXCLUDE = {"waehrung_umgerechnet", "zyklik_normalisiert", "zahlen_in_kuerze", "split_nach_bericht_bereinigt",
-                     "methoden_einig", "bilanz_warnsignal", "value_trap_risiko"}
+                     "methoden_einig", "bilanz_warnsignal", "gewinnqualitaet_pruefen", "value_trap_risiko"}
 
 
 def ampel(v) -> str:
@@ -301,8 +301,10 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
         Q[s] = quality.quality(row, None if mp != mp else mp)
         V[s] = valuation.fair_value(row, Q[s]["score"])
         warn[s] = red_flags(row)
-        if warn[s]:
+        if any(lv == "schieflage" for lv, _ in warn[s]):
             extra_flags[s].append("bilanz_warnsignal")
+        if any(lv == "gewinnqualitaet" for lv, _ in warn[s]):
+            extra_flags[s].append("gewinnqualitaet_pruefen")
 
     # Bewertung gegenüber der Vergleichsgruppe: Owner-Earnings-Rendite, FCF-Rendite, EV/EBITDA
     oy = pd.Series({s: (V[s] or {}).get("owner_yield") for s in df.index}, dtype=float)
@@ -324,7 +326,7 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
         p_sc = value_score(parts)
         m_sc = None if pd.isna(mom_pct.get(s)) else round(float(mom_pct[s]) * 10, 1)
         r_sc = revision_score(row)
-        total, caps = total_score(q, p_sc, m_sc, r_sc, v, bool(warn[s]))
+        total, caps = total_score(q, p_sc, m_sc, r_sc, v, {lv for lv, _ in warn[s]})
         lens = lenses(v, row.get("price"), _nan_none(sv), _nan_none(q_pct.get(s)), _nan_none(mom_pct.get(s)))
         agree = all(l["ampel"] == "gruen" for l in lens.values()) and not warn[s] and (q or 0) >= Q_GOOD
         if agree:
@@ -334,7 +336,7 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
         for k, x in (("q_score", q), ("q_components", Q[s]["components"]), ("q_adjustments", Q[s]["adjustments"]),
                      ("valuation", V[s]), ("price_score", p_sc), ("v_parts", parts), ("mom_score", m_sc),
                      ("rev_score", r_sc), ("score", total), ("lenses", lens), ("methods_agree", agree),
-                     ("warn_why", warn[s]), ("score_caps", caps)):
+                     ("warn_why", [t for _, t in warn[s]]), ("score_caps", caps)):
             rows_out[k].append(x)
     for k, col in rows_out.items():
         res[k] = col
@@ -375,25 +377,33 @@ def revision_score(row: dict) -> float | None:
     return round(sum(vals) / len(vals), 1) if vals else None
 
 
-def red_flags(row: dict) -> list[str]:
-    """Bilanz-Warnsignale (nur Unternehmen; Banken, Versicherer und REITs haben eine andere Bilanzlogik).
-    Altman allein schlägt bei Firmen mit hohen Rückkäufen fälschlich an, Beneish allein bei schnellem Wachstum –
-    deshalb jeweils nur zusammen mit einem zweiten Signal."""
+NO_ALTMAN_SECTORS = {"Utilities", "Real Estate"}   # regulierte bzw. immobilienlastige Bilanzen: Z'' nicht aussagekräftig
+
+
+def red_flags(row: dict) -> list[tuple[str, str]]:
+    """Bilanz-Warnsignale als (Stufe, Text); Stufe "schieflage" (Deckel 4) oder "gewinnqualitaet" (Deckel 6).
+    Nur Unternehmen: Banken, Versicherer und REITs haben eine andere Bilanzlogik. Altman allein schlägt bei
+    Versorgern und Firmen mit hohen Rückkäufen (negatives Eigenkapital) fälschlich an, Beneish allein bei
+    schnellem Wachstum – deshalb jeweils nur zusammen mit einem zweiten Beleg."""
     if row.get("is_financial") or row.get("is_reit"):
         return []
     out = []
     z, m, acc = _nan_none(row.get("altman_z2")), _nan_none(row.get("beneish_m")), _nan_none(row.get("accruals"))
-    nd = _nan_none(row.get("net_debt_ebitda"))
-    if z is not None and z < 1.1 and ((nd is not None and nd > 3) or row.get("loss_making")):
-        out.append(f"Altman Z'' {z:.2f} (Gefahrenzone < 1,1) bei hoher Verschuldung oder Verlust")
+    nd, f = _nan_none(row.get("net_debt_ebitda")), _nan_none(row.get("f_score"))
+    if (z is not None and z < 1.1 and row.get("sector") not in NO_ALTMAN_SECTORS
+            and (row.get("loss_making") or (nd is not None and nd > 4 and f is not None and f <= 4))):
+        out.append(("schieflage", f"Finanzielle Schieflage: Altman Z'' {z:.2f} (< 1,1) bei "
+                                  + ("Verlust" if row.get("loss_making") else f"Verschuldung {nd:.1f}x EBITDA und F-Score {f:.0f}")))
     if m is not None and m > -1.78 and acc is not None and acc > 0.05:
-        out.append(f"Beneish M-Score {m:.2f} (auffällig > -1,78) und hohe Accruals {acc:.0%}")
+        out.append(("gewinnqualitaet", f"Gewinnqualität prüfen: Beneish M-Score {m:.2f} (> -1,78) und Accruals {acc:.0%} "
+                                       "(bei starkem Wachstum oder Sondergewinnen oft Fehlalarm)"))
     elif acc is not None and acc > 0.10:
-        out.append(f"Accruals {acc:.0%} der Bilanzsumme – Gewinn deutlich über dem Cashflow")
+        out.append(("gewinnqualitaet", f"Gewinnqualität prüfen: Gewinn liegt {acc:.0%} der Bilanzsumme über dem Cashflow"))
     return out
 
 
-def total_score(q, p, m, rv, v: dict, warn: bool) -> tuple[float | None, list[str]]:
+def total_score(q, p, m, rv, v: dict, warn) -> tuple[float | None, list[str]]:
+    """warn: Menge der Warnstufen ({"schieflage", "gewinnqualitaet"}); True gilt als Schieflage."""
     """Rating 1-10 und angewandte Deckel. Ohne Qualitäts-Score kein Rating."""
     if q is None:
         return None, []
@@ -403,8 +413,10 @@ def total_score(q, p, m, rv, v: dict, warn: bool) -> tuple[float | None, list[st
     s = sum(WEIGHTS[k] * x for k, x in avail.items()) / w
     caps = []
     er = (v or {}).get("er")
+    warn = {"schieflage"} if warn is True else set(warn or ())
     for cond, lim, why in ((q < 4, 4.0, "Qualität < 4"), (q < 5, 5.0, "Qualität < 5"),
-                           (warn, 4.0, "Bilanz-Warnsignal"),
+                           ("schieflage" in warn, 4.0, "finanzielle Schieflage"),
+                           ("gewinnqualitaet" in warn, 6.0, "Gewinnqualität prüfen"),
                            (p is None, 6.0, "keine belastbare Bewertung"),
                            (er is not None and er < ER_MIN_FOR_GOOD, 6.0, "erwartete Rendite < 8 %")):
         if cond and s > lim:
@@ -435,6 +447,7 @@ def lenses(v: dict, price, sector_val, q_pct, mom_pct) -> dict:
 
 Q_GOOD, Q_OK = 7.0, 5.0
 KAUF_EXIT_TOL = 1.05   # Hysterese: Kandidat bleibt, solange der Kurs max. 5 % über dem Kaufkurs liegt
+NEAR_TOL = 1.10        # "nahe Kaufbereich": Kurs höchstens 10 % über dem Kaufkurs
 
 
 def assess(row: dict, prev_code: str | None = None) -> dict:
@@ -452,8 +465,8 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
     flags = set(row.get("flags") or [])
     price, fv, buy = row.get("price"), v.get("fair_value"), v.get("buy_price")
     in_buy = bool(price and buy and price <= buy * (KAUF_EXIT_TOL if prev_code == "kandidat" else 1.0))
-    near = bool(er is not None and hurdle and er >= hurdle - 0.02)
-    warn = "bilanz_warnsignal" in set(row.get("flags") or [])
+    near = bool(price and buy and price <= buy * NEAR_TOL)
+    warn = bool({"bilanz_warnsignal", "gewinnqualitaet_pruefen"} & set(row.get("flags") or []))
     cur = row.get("currency") or ""
     buy_txt = f" · Kaufkurs ≤ {buy:,.2f} {cur}".replace(",", "X").replace(".", ",").replace("X", ".") if buy else ""
 
@@ -466,7 +479,7 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
         if in_buy and not warn and v.get("uncertainty") != "sehr hoch":
             code, text = "kandidat", "Gutes Unternehmen im Kaufbereich – Kandidat für Einzelanalyse"
         elif in_buy and warn:
-            code, text = "beobachten", "Gutes Unternehmen, günstig – aber Bilanz-Warnsignal prüfen"
+            code, text = "beobachten", "Gutes Unternehmen, günstig – aber Bilanz-Warnsignal: erst prüfen"
         elif in_buy:
             code, text = "beobachten", "Gutes Unternehmen, rechnerisch günstig – Unsicherheit sehr hoch, Grund für Abschlag prüfen"
         elif near:

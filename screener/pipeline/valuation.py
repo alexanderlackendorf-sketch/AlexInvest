@@ -9,7 +9,8 @@ Ertragskraft je Aktie (cf0)
   normalisiert: 5-Jahres-Median-Marge × Umsatz je Aktie (liegt das letzte Jahr darüber: Ø beider Werte,
   bei strukturell steigender Marge das letzte Jahr; belegte Zykliker: immer Median).
   Banken/Versicherer: ROE (Median 5 J.) × Buchwert je Aktie. REITs: Dividende je Aktie.
-Wachstum: ⅔ Umsatz-CAGR (niedrigerer Wert aus 5 und bis 10 J.) + ⅓ aktuelles Umsatzwachstum,
+Wachstum: Umsatz-CAGR (niedrigerer Wert aus 5 und bis 10 J.) und aktuelles Umsatzwachstum, der niedrigere
+  der beiden zählt doppelt,
   begrenzt -3 … +15 %; gilt 5 Jahre, läuft dann je nach Wettbewerbsvorteil (Qualität >= 8: bis Jahr 15,
   >= 6,5: bis Jahr 10, sonst ab Jahr 3 bis Jahr 7) linear auf 3 % aus, danach 3 % ewig.
 Reinvestition (Werttreiber-Formel, McKinsey "Valuation"): Wachstum kostet Kapital.
@@ -43,7 +44,9 @@ ER_PTS = [(0.02, 0), (0.05, 2), (0.08, 4), (0.10, 5.5), (0.12, 7), (0.15, 8.5), 
 HIST_PTS = [(0.5, 0), (0.7, 2), (0.85, 3.5), (1.0, 5), (1.2, 6.5), (1.5, 8.5), (2.0, 10)]
 MOS = {"gering": 0.15, "mittel": 0.25, "hoch": 0.35, "sehr hoch": 0.50}
 LEVELS = ["gering", "mittel", "hoch", "sehr hoch"]
-MAX_UPSIDE = 1.5   # darüber fast immer Datenfehler oder Sondersituation
+MAX_UPSIDE = 3.0   # darüber fast immer Datenfehler (Währung, Aktiengattung, Abspaltung)
+EXTREME_UPSIDE = 1.5   # darüber: Markt sieht einen Bruch -> Unsicherheit "sehr hoch"
+HIST_YIELD_MIN = 0.035   # eigene Bewertungshistorie höchstens ~28x Ertragskraft (Bewertungsblasen nicht fortschreiben)
 
 
 def _v(x):
@@ -65,7 +68,8 @@ def hist_growth(r: dict) -> float | None:
 def growth_rate(r: dict, g_max: float = G_MAX) -> float | None:
     hist, now = hist_growth(r), _v(r.get("rev_growth"))
     if hist is not None and now is not None:
-        g = (2 * hist + now) / 3
+        # Der niedrigere Wert zählt doppelt: bremst das Wachstum ab, dominiert die Gegenwart
+        g = (2 * min(hist, now) + max(hist, now)) / 3
     else:
         g = hist if hist is not None else (now * 0.7 if now is not None else None)
     return None if g is None else _clip(g, G_MIN, g_max)
@@ -272,13 +276,14 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
                           f"{roic_src}{f' {roic:.0%}' if roic else ''}, Eigenkapitalkosten {coe:.0%} "
                           f"(Unsicherheit {pre_level})"}]
     if hist_yield is not None:
-        hy = _clip(hist_yield, 0.015, 0.15)
+        hy = _clip(hist_yield, HIST_YIELD_MIN, 0.15)
         methods.append({"name": "Eigene Bewertungshistorie", "value": cf0 / hy,
-                        "detail": f"Ertragskraft {cf0:.2f} / Median-Owner-Earnings-Rendite 5 J. {hist_yield:.1%}"})
+                        "detail": f"Ertragskraft {cf0:.2f} / Median-Owner-Earnings-Rendite 5 J. {hist_yield:.1%}"
+                                  + (f" (begrenzt auf {HIST_YIELD_MIN:.1%})" if hy != hist_yield else "")})
     vals = [m["value"] for m in methods]
     fv = sum(vals) / len(vals)
     upside = fv / price - 1
-    if upside > MAX_UPSIDE or er >= 0.40:
+    if methods[0]["value"] / price - 1 > MAX_UPSIDE or er >= 0.40:
         return {"fair_value": None, "er": None,
                 "reason": f"Rechnerischer Wert {upside:+.0%} über Kurs bzw. erwartete Rendite ≥ 40 % – bei "
                           "Großunternehmen fast immer Datenfehler (Währung, Aktiengattung, Abspaltung) oder "
@@ -291,7 +296,10 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
             unc.append((2, "Methoden liegen über Faktor 2 auseinander"))
         elif spread > 1.5:
             unc.append((1, "Methoden liegen über Faktor 1,5 auseinander"))
-    if upside > 0.6:
+    if upside > EXTREME_UPSIDE:
+        unc.append((5, "Rechenwert mehr als 150 % über Kurs – der Markt sieht einen Bruch (Disruption, Patente, "
+                       "Preiskampf?) oder die Daten sind fehlerhaft; ohne Einzelanalyse nicht verwertbar"))
+    elif upside > 0.6:
         unc.append((1, "Kurs weit unter Rechenwert – Markt preist ein Risiko ein (Disruption, Klagen, Zyklus?)"))
     level = _level(sum(p for p, _ in unc))
     mos = MOS[level]
@@ -310,7 +318,8 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
                 "value": round(value(cf0 * dm, gg, roic, coe, cap=cap), 2), "growth": round(gg, 3)}
 
     flows, _ = _path(cf0, g, roic, cap)
-    y = [value(cf0, g, roic, coe, at_year=n, cap=cap) for n in (1, 2, 3)]
+    # Fairer Wert in n Jahren: heutiger fairer Wert (beide Methoden) fortgeschrieben mit dem DCF-Pfad
+    y = [fv * value(cf0, g, roic, coe, at_year=n, cap=cap) / methods[0]["value"] for n in (1, 2, 3)]
     # Kurs in n Jahren, wenn die Bewertung bleibt (Markt verlangt weiter dieselbe Rendite, keine Neubewertung)
     keep = [value(cf0, g, roic, er, at_year=n, cap=cap) for n in (1, 2, 3)]
     total3 = (y[2] + sum(flows[:3])) / price - 1

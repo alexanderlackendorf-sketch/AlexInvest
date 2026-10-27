@@ -132,7 +132,7 @@ class RulesTest(unittest.TestCase):
 
     def test_verdict_matrix(self):
         self.assertEqual(self._row(8.0, 0.12)["verdict_code"], "kandidat")
-        self.assertEqual(self._row(8.0, 0.09)["verdict_code"], "beobachten")          # nahe an der Hürde
+        self.assertEqual(self._row(8.0, 0.09, buy=95.0)["verdict_code"], "beobachten")   # ≤ 10 % über Kaufkurs
         self.assertEqual(self._row(8.0, 0.06)["verdict_code"], "beobachten_teuer")
         self.assertIn("Kaufkurs", self._row(8.0, 0.06)["verdict"])
         self.assertEqual(self._row(8.0, 0.12, flags=["bilanz_warnsignal"])["verdict_code"], "beobachten")
@@ -170,7 +170,10 @@ class RulesTest(unittest.TestCase):
 
     def test_red_flags(self):
         self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 1.0}), [])   # Altman allein reicht nicht
-        self.assertTrue(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 4.0}))
+        self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 5.0, "f_score": 3})[0][0], "schieflage")
+        self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 5.0, "f_score": 7}), [])
+        self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "loss_making": True, "sector": "Utilities"}), [])
+        self.assertEqual(scoring.total_score(9.0, 9.0, 9.0, 9.0, {"er": 0.2}, {"gewinnqualitaet"})[0], 6.0)
         self.assertEqual(scoring.red_flags({"beneish_m": -1.0, "accruals": 0.0}), [])         # Beneish allein reicht nicht
         self.assertTrue(scoring.red_flags({"beneish_m": -1.0, "accruals": 0.07}))
         self.assertTrue(scoring.red_flags({"accruals": 0.12}))
@@ -242,7 +245,8 @@ class ValuationModelTest(unittest.TestCase):
 
     def test_growth(self):
         r = {"rev_cagr": 0.20, "rev_cagr_long": 0.08, "rev_growth": 0.05}
-        self.assertAlmostEqual(valuation.growth_rate(r), (2 * 0.08 + 0.05) / 3)   # Corona-Basiseffekt raus
+        self.assertAlmostEqual(valuation.growth_rate(r), (2 * 0.05 + 0.08) / 3)   # Corona raus, niedrigerer Wert doppelt
+        self.assertAlmostEqual(valuation.growth_rate({"rev_cagr": 0.20, "rev_growth": -0.05}), (2 * -0.05 + 0.20) / 3)
         self.assertFalse(valuation.growth_conflict(r))
         self.assertTrue(valuation.growth_conflict({"rev_cagr": 0.25, "rev_growth": 0.02}))
         self.assertEqual(valuation.growth_rate({"rev_cagr": 0.40}), valuation.G_MAX)

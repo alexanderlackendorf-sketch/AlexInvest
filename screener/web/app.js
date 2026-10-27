@@ -25,7 +25,8 @@ const FLAG_TEXT = {
   historie_je_aktie_unplausibel: "Je-Aktie-Werte der Historie passen nicht zu Yahoo (andere Aktiengattung/Einheit) – für die Bewertung verworfen",
   kbv_unplausibel: "Buchwert je Aktie unplausibel (z.B. andere Aktiengattung) – KBV verworfen",
   value_trap_risiko: "Value-Falle möglich: günstig bewertet, aber schwache Qualität",
-  bilanz_warnsignal: "Bilanz-Warnsignal (Altman, Beneish oder Accruals) – Details in der Qualitäts-Ansicht",
+  bilanz_warnsignal: "Finanzielle Schieflage (Altman Z'' in der Gefahrenzone plus Verlust oder hohe Verschuldung) – Rating max. 4",
+  gewinnqualitaet_pruefen: "Gewinnqualität prüfen (Beneish M-Score bzw. Gewinn deutlich über dem Cashflow) – Rating max. 6",
   methoden_einig: "Alle drei Profi-Methoden einig (Quant-Faktoren, erwartete Rendite, fairer Wert)",
 };
 const AMPEL = { gruen: "🟢", gelb: "🟡", rot: "🔴", grau: "⚪" };
@@ -184,7 +185,7 @@ const PRESETS = [
   { id: "div", label: "Dividenden-Qualität", f: (r) => r.div_yield >= 0.03 && r.q_score >= 6 && (r.payout == null || r.payout < 0.8) },
   { id: "revs", label: "Positive Revisionen + Qualität", f: (r) => r.rev_eps_90d >= 0.03 && r.rev_breadth > 0 && r.q_score >= 7 },
   { id: "dip", label: "Qualität im Rücksetzer (unter SMA200)", f: (r) => r.q_score >= 7 && r.dist_sma200 < 0 },
-  { id: "warn", label: "Warnsignale (Bilanz, Value-Falle, Zykliker)", f: (r) => (r.flags || []).some((f) => ["zyklik_spitzengewinn", "zyklik_normalisiert", "value_trap_risiko", "bilanz_warnsignal"].includes(f)) },
+  { id: "warn", label: "Warnsignale (Bilanz, Value-Falle, Zykliker)", f: (r) => (r.flags || []).some((f) => ["zyklik_spitzengewinn", "zyklik_normalisiert", "value_trap_risiko", "bilanz_warnsignal", "gewinnqualitaet_pruefen"].includes(f)) },
   { id: "fscore", label: "Fundamentale Verbesserung (F-Score ≥ 7, Q ≥ 6)", f: (r) => r.f_score >= 7 && r.q_score >= 6 },
   { id: "soon", label: "Zahlen in ≤ 7 Tagen", f: (r) => (r.flags || []).includes("zahlen_in_kuerze") },
   { id: "risers", label: "Score-Aufsteiger", f: (r) => r.score_chg_1w >= 0.8 },
@@ -449,7 +450,7 @@ function method() {
     Grundlage sind geprüfte Jahresabschlüsse (SEC 10-K bzw. Yahoo), keine Analysten-Gewinnprognosen. Alle Skalen sind absolut, es gibt keine erzwungene Verteilung.</p>
     <h4>1 · Rating 1–10</h4>
     <p class="small"><b>40 % Bewertung + 35 % Qualität + 15 % Momentum + 10 % Gewinnrevisionen.</b> Danach harte Deckel, denn Schwächen lassen sich nicht durch einen billigen Kurs ausgleichen:
-    Qualität &lt; 5 → höchstens 5 (&lt; 4 → höchstens 4) · Bilanz-Warnsignal → höchstens 4 · erwartete Rendite unter 8 % → höchstens 6 · keine belastbare Bewertung → höchstens 6.</p>
+    Qualität &lt; 5 → höchstens 5 (&lt; 4 → höchstens 4) · finanzielle Schieflage → höchstens 4 · Gewinnqualität prüfen → höchstens 6 · erwartete Rendite unter 8 % → höchstens 6 · keine belastbare Bewertung → höchstens 6.</p>
     <ul class="small">
       <li><b>Bewertung</b> = 60 % erwartete Rendite (2 % → 0 · 5 % → 2 · 8 % → 4 · 10 % → 5,5 · 12 % → 7 · 15 % → 8,5 · ≥ 20 % → 10)
         + 20 % gegenüber der eigenen Bewertungshistorie (Owner-Earnings-Rendite heute ÷ Median 5 J.: 0,7 → 2 · 1,0 → 5 · 1,5 → 8,5 · 2 → 10)
@@ -486,20 +487,22 @@ function method() {
     <ul class="small">
       <li><b>Piotroski F-Score</b> (0–9): Gewinn und Cashflow positiv und steigend, Cashflow über Gewinn, weniger Schulden, mehr Liquidität, keine neuen Aktien, steigende Bruttomarge und steigender Kapitalumschlag.</li>
       <li><b>Altman Z''</b> (Insolvenzrisiko, Fassung ohne Börsenwert), <b>Beneish M-Score</b> (Hinweis auf Bilanzkosmetik) und <b>Accruals</b> nach Sloan (Gewinn ohne Cash).</li>
-      <li>Ein <b>Bilanz-Warnsignal</b> erfordert jeweils zwei Belege: Altman &lt; 1,1 <i>und</i> Verschuldung &gt; 3× EBITDA oder Verlust, Beneish &gt; −1,78 <i>und</i> Accruals &gt; 5 %, oder Accruals &gt; 10 % allein.
-        Altman schlägt sonst bei Firmen mit großen Rückkäufen fälschlich an, Beneish bei schnellem Wachstum.</li>
+      <li><b>Finanzielle Schieflage</b> (Rating max. 4): Altman &lt; 1,1 <i>und</i> Verlust oder Verschuldung &gt; 4× EBITDA bei F-Score ≤ 4. Versorger und Immobilien sind ausgenommen,
+        denn ihre regulierten, kapitalintensiven Bilanzen liegen fast immer unter 1,1. Firmen mit negativem Eigenkapital durch Rückkäufe fallen ohne zweiten Beleg ebenfalls nicht darunter.</li>
+      <li><b>Gewinnqualität prüfen</b> (Rating max. 6, kein „Kandidat“): Beneish &gt; −1,78 <i>und</i> Accruals &gt; 5 %, oder Accruals &gt; 10 % allein.
+        Bei schnellem Wachstum oder Sondergewinnen (Abspaltungen, Beteiligungsgewinne) ist das oft ein Fehlalarm. Deshalb ist es ein Prüfauftrag, kein Ausschluss.</li>
     </ul>
     <h4>6 · Drei Methoden als Gegenprobe</h4>
     <ul class="small">
       <li><b>Quant-Faktoren</b>: Mittel der Perzentile für Value (in der Vergleichsgruppe), Quality und Momentum (im Universum). Grün ab 70, gelb ab 40.</li>
       <li><b>Erwartete Rendite</b>: grün ab der Hürde, gelb bis 3 Pp. darunter.</li>
       <li><b>Fairer Wert</b>: grün, wenn der Abschlag zum fairen Wert die nötige Sicherheitsmarge erreicht; gelb, wenn der Kurs unter dem fairen Wert liegt.</li>
-      <li><b>Methoden einig</b> = alle drei grün, Qualität ≥ 7 und kein Bilanz-Warnsignal: die kürzeste und belastbarste Liste des Screeners.</li>
+      <li><b>Methoden einig</b> = alle drei grün, Qualität ≥ 7 und keine Bilanz-Warnung: die kürzeste und belastbarste Liste des Screeners.</li>
     </ul>
     <h4>7 · Urteil</h4>
     <ul class="small">
-      <li><b>Gutes Unternehmen im Kaufbereich</b>: Qualität ≥ 7, Kurs ≤ Kaufkurs, kein Bilanz-Warnsignal, Unsicherheit nicht „sehr hoch“. Ein Kandidat bleibt Kandidat, bis der Kurs mehr als 5 % über dem Kaufkurs liegt.</li>
-      <li><b>Nahe Kaufbereich</b>: erwartete Rendite höchstens 2 Pp. unter der Hürde. <b>Auf Kaufkurs warten</b>: darunter, der Kaufkurs steht dabei.</li>
+      <li><b>Gutes Unternehmen im Kaufbereich</b>: Qualität ≥ 7, Kurs ≤ Kaufkurs, keine Bilanz-Warnung, Unsicherheit nicht „sehr hoch“. Ein Kandidat bleibt Kandidat, bis der Kurs mehr als 5 % über dem Kaufkurs liegt.</li>
+      <li><b>Nahe Kaufbereich</b>: Kurs höchstens 10 % über dem Kaufkurs. <b>Auf Kaufkurs warten</b>: darüber, der Kaufkurs steht dabei.</li>
       <li><b>Solide Qualität</b> (5–7): günstig (Kurs ≤ Kaufkurs), fair (erwartete Rendite ≥ 8 %) oder zu teuer. <b>Schwache Qualität</b> (&lt; 5): meiden; bei niedrigem Kurs mit dem Hinweis „Value-Falle möglich“.</li>
       <li>Chart (Trend, Buy-Zonen) und Analysten-Kursziele fließen <b>nicht</b> ins Rating ein. Sie dienen der Einordnung und dem Timing.</li>
     </ul>
