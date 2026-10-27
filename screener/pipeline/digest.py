@@ -36,18 +36,17 @@ def ampeln(r) -> str:
 
 
 def why(r) -> str:
-    """Kurzbegründung: Qualität, fairer Wert, Kaufkurs, stärkste Kennzahlen."""
+    """Kurzbegründung: Qualität, erwartete Rendite gegen Hürde, Kaufkurs, Methoden."""
     v = r.get("valuation") or {}
-    cur = r.get("currency") or ""
     parts = []
     if r.get("q_score") is not None:
         parts.append(f"Qualität {_n(r['q_score'])}")
-    if v.get("fair_value") is not None:
-        parts.append(f"fairer Wert {_n(v['fair_value'], 0)} {cur} ({_p(v.get('upside'), 0)})")
+    if v.get("er") is not None:
+        parts.append(f"erw. Rendite {_p(v['er'], 1, False)} p.a. (Hürde {_p(v.get('hurdle'), 0, False)})")
     if v.get("buy_price") is not None:
         parts.append(f"Kaufkurs ≤ {_n(v['buy_price'], 0)}")
-    if r.get("roic_med5") is not None:
-        parts.append(f"ROIC 5J {_p(r['roic_med5'], 0, False)}")
+    if r.get("methods_agree"):
+        parts.append("Methoden einig")
     return " · ".join(parts[:4]) or "–"
 
 

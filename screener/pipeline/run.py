@@ -292,15 +292,17 @@ def main(argv=None):
         return h[-1][1] - old[-1][1] if (old and h) else None
 
     prev_verdicts = _load(state / "verdicts.json", {})
+    if (prev_meta.get("model") or {}).get("version") != scoring.MODEL_VERSION:
+        prev_verdicts = {}   # Modellwechsel: kein Hysterese-Bonus aus dem alten Modell
     out_rows = []
     for s, r in df.iterrows():
         d = r.to_dict()
         d["symbol"] = s
         pct_pillars = {n: d.pop(f"p_{n}") for n in scoring.PILLARS}
         # Anzeige-Säulen: Qualität und Bewertung absolut (Qualitäts-Score, Preis-Score), übrige als Perzentil-Info
-        d["pillars"] = {"Qualität": d.get("q_score"), "Bewertung": d.get("price_score"),
+        d["pillars"] = {"Bewertung": d.get("price_score"), "Qualität": d.get("q_score"),
+                        "Momentum": d.get("mom_score"), "Revisionen": d.get("rev_score"),
                         "Wachstum": (d.get("q_components") or {}).get("Wachstum"),
-                        "Revisionen": pct_pillars.get("Revisionen"), "Trend": pct_pillars.get("Trend"),
                         "Analysten": pct_pillars.get("Analysten")}
         if not isinstance(d.get("sec"), dict):
             d.pop("sec", None)
@@ -343,9 +345,10 @@ def main(argv=None):
         "hist_sources": {src: sum(1 for r in out_rows if r.get("hist_source") == src)
                          for src in ("SEC 10-K", "Yahoo-Jahresabschlüsse")},
         "price_date_max": max((r["last_date"] for r in out_rows), default=None),
-        "model": {"version": scoring.MODEL_VERSION, "w_quality": scoring.W_QUALITY, "w_price": scoring.W_PRICE,
+        "model": {"version": scoring.MODEL_VERSION, "weights": scoring.WEIGHTS, "value_weights": scoring.VALUE_WEIGHTS,
                   "quality_weights": quality.WEIGHTS, "quality_weights_fin": quality.WEIGHTS_FIN,
-                  "r_base": valuation.R_BASE, "r_fin": valuation.R_FIN, "g_max": valuation.G_MAX},
+                  "coe_by_level": valuation.COE_BY_LEVEL, "coe_fin": valuation.COE_FIN, "g_max": valuation.G_MAX,
+                  "methods_agree": sum(1 for r in out_rows if r.get("methods_agree"))},
         "pillars": {n: {"weight": p["weight"], "in_score": p["in_score"],
                         "metrics": [[m, scoring.LABELS[m], hb] for m, hb in p["metrics"]]}
                     for n, p in scoring.PILLARS.items()},
