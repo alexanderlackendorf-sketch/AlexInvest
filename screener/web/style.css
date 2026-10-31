@@ -269,3 +269,9 @@ details.summary p { line-height: 1.5; color: var(--text-secondary); }
 .lenses { display: flex; flex-direction: column; gap: 6px; }
 .lens { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
 .lens b { font-size: 13px; }
+
+/* Interessant heute */
+.top-picks { margin-bottom: 12px; }
+.top-picks table.picks { width: 100%; }
+.top-picks tbody tr { cursor: pointer; }
+.top-picks tbody tr:hover td { background: var(--surface-2, rgba(127,127,127,.08)); }

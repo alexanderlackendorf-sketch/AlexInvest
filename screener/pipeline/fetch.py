@@ -66,6 +66,21 @@ def _extras(t) -> dict:
     except Exception:  # noqa: BLE001
         pass
     try:
+        # Konsens-Schätzungen für laufendes (0y) und nächstes Geschäftsjahr (+1y): Umsatz und Gewinn je Aktie
+        est = {}
+        for name, df, ago in (("rev", t.revenue_estimate, "yearAgoRevenue"), ("eps", t.earnings_estimate, "yearAgoEps")):
+            if df is None or df.empty:
+                continue
+            for period in ("0y", "+1y"):
+                if period in df.index:
+                    row = df.loc[period]
+                    est[f"{name}_{period}"] = {"avg": _f(row.get("avg")), "n": _f(row.get("numberOfAnalysts")),
+                                               "year_ago": _f(row.get(ago)), "growth": _f(row.get("growth"))}
+        if est:
+            out["estimates"] = est
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         out["news"] = _news(t.news)
     except Exception:  # noqa: BLE001
         pass
