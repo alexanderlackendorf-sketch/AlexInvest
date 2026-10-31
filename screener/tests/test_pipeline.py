@@ -308,6 +308,38 @@ class ValuationModelTest(unittest.TestCase):
         self.assertIn(shaky["uncertainty"], ("hoch", "sehr hoch"))
         self.assertGreater(shaky["coe"], v["coe"])
 
+    def test_consensus_near_growth(self):
+        # Jahre 1-2 aus dem Konsens, nach oben und unten; ab Jahr 3 Modellwachstum
+        self.assertIsNone(valuation.near_growth({}))
+        self.assertEqual(valuation.near_growth({"rev_growth_cy": 0.40, "rev_growth_ny": -0.30}), [0.25, -0.15])
+        self.assertEqual(valuation.near_growth({"rev_growth_ny": 0.10}), [None, 0.10])
+        flows, _ = valuation._path(1.0, 0.05, None, 15, [0.20, 0.10])
+        self.assertAlmostEqual(flows[0], 1.20)
+        self.assertAlmostEqual(flows[1], 1.20 * 1.10)
+        self.assertAlmostEqual(flows[2], 1.20 * 1.10 * 1.05)
+        base = valuation.fair_value(self._company(), 8.0)
+        up = valuation.fair_value(self._company(rev_growth_cy=0.20, rev_growth_ny=0.18), 8.0)
+        down = valuation.fair_value(self._company(rev_growth_cy=-0.05, rev_growth_ny=-0.05), 8.0)
+        self.assertGreater(up["er"], base["er"])
+        self.assertLess(down["er"], base["er"])
+        self.assertEqual(up["growth_near"], [0.2, 0.18])
+        self.assertIsNone(base["growth_near"])
+        # Konsens fürs nächste Jahr hebt auch den Gegenwarts-Deckel
+        self.assertAlmostEqual(valuation.growth_rate({"rev_cagr": 0.10, "rev_growth": 0.02, "rev_growth_ny": 0.09}),
+                               (2 * 0.02 + 0.10) / 3)
+
+    def test_consensus_in_derive(self):
+        info = {"currency": "USD", "financialCurrency": "USD", "currentPrice": 100.0, "sharesOutstanding": 10.0,
+                "trailingEps": 4.0, "forwardEps": 6.0,
+                "estimates": {"eps_0y": {"avg": 5.0, "n": 10}, "eps_+1y": {"avg": 5.5, "n": 10},
+                              "rev_0y": {"avg": 110.0, "n": 10, "year_ago": 100.0}, "rev_+1y": {"avg": 121.0, "n": 2}}}
+        m, flags = metrics.derive(info, 100.0, {"USD": 1.0})
+        self.assertAlmostEqual(m["eps_growth_fwd"], 0.10)            # Konsens gegen Konsens, nicht 6 / 4
+        self.assertAlmostEqual(m["rev_growth_cy"], 0.10)
+        self.assertIsNone(m["rev_growth_ny"])                        # nur 2 Analysten
+        m2, _ = metrics.derive(dict(info, estimates={}), 100.0, {"USD": 1.0})
+        self.assertAlmostEqual(m2["eps_growth_fwd"], 0.5)            # ohne Konsens: alter Rückfall
+
     def test_market_doubt_and_hist_cap(self):
         # Kurs 60 bei Ertragskraft 6: Markt preist kaum Wachstum ein, Modell rechnet mit 8 % -> Zweifel
         base = valuation.fair_value(self._company(price=100.0), 8.0)

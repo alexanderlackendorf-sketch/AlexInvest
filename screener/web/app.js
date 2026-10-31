@@ -13,6 +13,7 @@ const FLAG_TEXT = {
   kbv_inkonsistent: "KBV: Widerspruch zwischen Quellen – Wert verworfen",
   ev_ebitda_inkonsistent: "EV/EBITDA: Widerspruch zwischen Quellen – Wert verworfen",
   eps_wachstum_unplausibel: "Erwartetes EPS-Wachstum unplausibel – verworfen",
+  umsatzprognose_unplausibel: "Konsens-Umsatzprognose unplausibel – verworfen",
   dividende_unplausibel: "Dividendenrendite unplausibel – verworfen",
   kursziel_unplausibel: "Analysten-Kursziel unplausibel – verworfen",
   kurs_vs_schluss_abweichung: "Live-Kurs weicht >25 % vom letzten Schlusskurs ab",
@@ -490,7 +491,8 @@ function method() {
         Liegt das letzte Jahr über dem Median, zählt das Mittel; steigt die Marge strukturell (über 1 Pp. p.a.), das letzte Jahr. Zykliker: immer der Median.
         Banken: ROE (Median 5 J.) × Buchwert. REITs: Dividende.</li>
       <li><b>Wachstum</b> = Umsatz-CAGR (der niedrigere Wert aus 5 und bis zu 10 Jahren) und aktuelles Umsatzwachstum, der niedrigere Wert zählt doppelt, begrenzt auf −3 … +15 %.
-        <b>Deckel durch die Gegenwart</b>: höchstens der höhere Wert aus aktuellem Umsatzwachstum und erwartetem Gewinnwachstum. Prognosen senken das Wachstum nur, sie heben es nie. So überstimmt ein vergangener Boom keinen Wendepunkt.</li>
+        <b>Deckel durch die Gegenwart</b>: höchstens der höchste Wert aus aktuellem Umsatzwachstum, erwartetem Gewinnwachstum und Konsens-Umsatzwachstum fürs nächste Jahr. So überstimmt ein vergangener Boom keinen Wendepunkt.
+        <b>Jahre 1 und 2</b>: Konsens-Umsatzwachstum für das laufende und das nächste Geschäftsjahr (ab 3 Analysten, begrenzt auf −15 … +25 %), nach oben wie nach unten. Ab Jahr 3 gilt wieder das Wachstum aus der Vergangenheit. Umsatzprognosen sind verlässlicher als Gewinnprognosen; das erwartete Gewinnwachstum wird Konsens gegen Konsens gerechnet (gleiche Abgrenzung), nicht Prognose gegen Ist-Gewinn.</li>
       <li><b>Wettbewerbsvorteil</b>: Das Wachstum gilt 5 Jahre und läuft dann linear auf 3 % aus, und zwar bis Jahr 15 bei Qualität ≥ 8, bis Jahr 10 bei ≥ 6,5, sonst ab Jahr 3 bis Jahr 7. Danach gelten 3 % dauerhaft.
         So macht es auch Morningstar: Je breiter der Burggraben, desto länger halten Überrenditen.
         <b>Markt zweifelt</b>: Liegt das eingepreiste Wachstum mehr als 8 Pp. unter der Modellannahme, wird die Periode um eine Stufe verkürzt (15 → 10 → 7 Jahre) und die Unsicherheit steigt.</li>
@@ -535,6 +537,7 @@ function method() {
     <ul class="small">
       <li>[IST] veröffentlichte Zahl · [BERECHNET] eigene Rechnung · [SCHÄTZUNG] Konsens oder Annahme · [UNBEKANNT] · [NICHT ANWENDBAR]. Kein Wert wird erfunden oder aufgefüllt.</li>
       <li>US-Werte: bis 10 Jahre aus den SEC-10-K-Berichten, Gewinn und EPS gegen den 10-K geprüft. Übrige: 4 Jahre aus Yahoo. Splits, Aktiengattungen und Einheitenfehler werden bereinigt.</li>
+      <li>Zukunftsaussichten jenseits der Konsensschätzungen (Disruption, Regulierung, Management, Guidance) sieht das Modell nicht. Sie sind Pflichtpunkte im Einzelanalyse-Prompt.</li>
       <li>Empfindlichkeit: 1 Pp. mehr Eigenkapitalkosten oder 2 Pp. weniger Wachstum senken den fairen Wert im Median um etwa 6–7 %. Disruption, Klagen und Managementfehler sieht kein Modell. Dafür gibt es die Einzelanalyse.</li>
       <li>Kein Rückrechnungs-Backtest: Mit kostenlosen Daten fehlen frühere Abschlüsse zum damaligen Stand, und heute stehen nur die überlebenden Firmen im Index. Die Gewichte stützen sich auf die veröffentlichte Forschung; geprüft wird vorwärts in der Erfolgskontrolle.</li>
     </ul>
@@ -693,6 +696,7 @@ function openDetail(sym) {
         <dt>Erwartete Rendite</dt><dd><b>${pctPlain(v.er)} p.a.</b> <span class="muted small">(Hürde ${pctPlain(v.hurdle, 0)} · Bär/Schrumpfung ${pctPlain(sc.bear && sc.bear.er)} · Bulle ${pctPlain(sc.bull && sc.bull.er)})</span></dd>
         <dt>Kaufkurs</dt><dd><b>≤ ${money(v.buy_price, r.currency)}</b> <span class="muted small">(${v.buy_out_of_reach ? "außer Reichweite: mehr als 50 % unter dem Kurs" : "dort erreicht die Rendite die Hürde"})</span></dd>
         <dt>Abstand zum Kaufkurs</dt><dd>${toBuy <= 0 ? '<span class="ok-line" style="display:inline">● im Kaufbereich</span>' : `Kurs liegt ${pctPlain(toBuy, 0)} darüber`}</dd>
+        <dt>Angenommenes Wachstum</dt><dd>${v.growth_near ? `Jahr 1 ${pctN(v.growth_near[0])} · Jahr 2 ${pctN(v.growth_near[1])} <span class="muted small">(Konsens)</span> · danach ` : ""}${pctN(v.growth)} <span class="muted small">(Ø Jahre 1–5 ${pctN(v.growth_5y)})</span></dd>
         <dt>Eingepreistes Wachstum</dt><dd>${isNum(v.implied_growth) ? `${pctN(v.implied_growth)} p.a. (J. 1–5) · geliefert ${pctN(v.growth_hist)}` : '<span class="muted">nicht sinnvoll (ROIC ≤ Kapitalkosten oder fehlend)</span>'}</dd>
         <dt>Fairer Wert</dt><dd>${money(v.fair_value, r.currency)} <span class="muted small">(${pctN(v.upside, 0)} · Spanne ${money(sc.bear && sc.bear.value, "")} – ${money(sc.bull && sc.bull.value, "")})</span></dd>
         <dt>Unsicherheit</dt><dd>${esc(v.uncertainty)} <span class="muted small">→ Eigenkapitalkosten ${pctPlain(v.coe, 0)}, nötige Sicherheitsmarge ${pctPlain(v.mos_required, 0)}</span></dd>
@@ -914,12 +918,20 @@ Orientierungswerte aus meinem Screener. Nicht als Quelle verwenden, alle Zahlen 
 - Ampeln: Qualität ${AMPEL[a["Qualität"] || "grau"]}, Bewertung ${AMPEL[a["Bewertung"] || "grau"]}, Wachstum ${AMPEL[a["Wachstum"] || "grau"]}, Daten ${AMPEL[a["Daten"] || "grau"]}, Einstieg ${AMPEL[a["Einstieg"] || "grau"]}
 - KGV ttm ${f2(r.pe_ttm)}, KGV fwd ${f2(r.pe_fwd)}, EV/EBITDA ${f2(r.ev_ebitda)}, FCF-Rendite ${p1(r.fcf_yield)}, ROE ${p1(r.roe)}, op. Marge ${p1(r.op_margin)}, Umsatzwachstum ${p1(r.rev_growth)}
 - ROIC 5J ${p1(r.roic_med5)}, Umsatz-CAGR 5J ${p1(r.rev_cagr)} (10J ${p1(r.rev_cagr_long)}), Aktienzahl p.a. ${p1(r.share_cagr)}, KGV vs. 5J-Median ${p1(r.pe_vs_hist)}
-- EPS-Revision 90 Tage ${p1(r.rev_eps_90d)} · nächster Termin ${r.earnings_date || "unbekannt"}
+- EPS-Revision 90 Tage ${p1(r.rev_eps_90d)} · Konsens-Umsatzwachstum laufendes GJ ${p1(r.rev_growth_cy)}, nächstes GJ ${p1(r.rev_growth_ny)} · Konsens-Gewinnwachstum ${p1(r.eps_growth_fwd)} · nächster Termin ${r.earnings_date || "unbekannt"}
 - KGV normalisiert ${f2(r.pe_norm)} · Vergleichsgruppe ${r.peer_group || r.sector || "?"}
 - Trend: ${r.trend} · Buy-Zonen laut Screener: ${z}
 - Prüfhinweise des Screeners: ${hints}
 ${histPrompt(r)}${peerPrompt(r)}
-Bitte prüfe insbesondere: Ist die Mehrjahresentwicklung nachhaltig, was ist im Kurs eingepreist, und wie schneidet die Aktie gegen die genannten Wettbewerber ab?`;
+Bitte prüfe insbesondere: Ist die Mehrjahresentwicklung nachhaltig, was ist im Kurs eingepreist, und wie schneidet die Aktie gegen die genannten Wettbewerber ab?
+
+Pflichtpunkte Zukunftsaussichten (sieht das Zahlenmodell nicht, bitte jeweils mit Quelle und Datum):
+1. Disruption: Bedrohen neue Technologien (z. B. KI), neue Anbieter oder Preiskampf das Kerngeschäft? Was spricht dagegen?
+2. Regulierung und Recht: laufende Verfahren, Untersuchungen, Preis- oder Erstattungsregeln, Zölle, Sanktionen.
+3. Management und Kapitalallokation: Wechsel an der Spitze, Übernahmen, Rückkäufe, Vergütung, Bilanzpolitik.
+4. Ausblick des Unternehmens: aktuelle Guidance, Auftragsbestand, Pipeline, Trend der Schätzrevisionen – und wie realistisch sind die Konsensschätzungen?
+5. Markt und Branche: Wachstum des adressierbaren Markts, Zyklusphase, Marktanteil.
+6. Was müsste passieren, damit die Investmentthese scheitert? Leite daraus ein konkretes Ausstiegskriterium ab.`;
   const done = () => toast("Prompt kopiert. Im Projekt „Aktienanalyse“ einfügen.");
   navigator.clipboard ? navigator.clipboard.writeText(txt).then(done, () => prompt("Prompt kopieren:", txt)) : prompt("Prompt kopieren:", txt);
 }

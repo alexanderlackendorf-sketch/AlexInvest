@@ -12,7 +12,9 @@ Ertragskraft je Aktie (cf0)
 Wachstum: Umsatz-CAGR (niedrigerer Wert aus 5 und bis 10 J.) und aktuelles Umsatzwachstum, der niedrigere
   der beiden zählt doppelt, gedeckelt durch die Gegenwart: höchstens der höhere Wert aus aktuellem
   Umsatzwachstum und erwartetem Gewinnwachstum (Prognosen nur als Deckel nach unten, nie als Basis),
-  begrenzt -3 … +15 %; gilt 5 Jahre, läuft dann je nach Wettbewerbsvorteil (Qualität >= 8: bis Jahr 15,
+  begrenzt -3 … +15 %;
+  Jahre 1-2: Konsens-Umsatzwachstum laufendes und nächstes GJ (ab 3 Analysten, begrenzt -15 … +25 %) –
+  nach oben und unten; ab Jahr 3 wieder das Modellwachstum aus der Vergangenheit; gilt 5 Jahre, läuft dann je nach Wettbewerbsvorteil (Qualität >= 8: bis Jahr 15,
   >= 6,5: bis Jahr 10, sonst ab Jahr 3 bis Jahr 7) linear auf 3 % aus, danach 3 % ewig.
 Reinvestition (Werttreiber-Formel, McKinsey "Valuation"): Wachstum kostet Kapital.
   Ausschüttbar = Ertragskraft × (1 - Wachstum / ROIC), ROIC Median 5 J. mit Goodwill (begrenzt 6-40 %).
@@ -60,6 +62,7 @@ DOUBT_GAP = 0.08         # Modellwachstum mehr als 8 Pp. über dem eingepreisten
 HURDLE_PREMIUM = 0.02
 OUT_OF_REACH = 0.5       # Kaufkurs < 50 % des Kurses -> "außer Reichweite"
 BEAR = {"g_max": -0.02, "dg": -0.04, "cf": 0.75}
+G_NEAR_MIN, G_NEAR_MAX = -0.15, 0.25   # Konsenswachstum Jahre 1-2
 BULL = {"dg": 0.03, "cf": 1.10}
 
 
@@ -85,8 +88,17 @@ def present_growth(r: dict) -> float | None:
     fwd = _v(r.get("eps_growth_fwd"))
     if fwd is not None and ("eps_wachstum_unplausibel" in (r.get("flags") or []) or abs(fwd) > 0.5):
         fwd = None
-    vals = [x for x in (now, fwd) if x is not None]
+    vals = [x for x in (now, fwd, _v(r.get("rev_growth_ny"))) if x is not None]
     return max(vals) if vals else None
+
+
+def near_growth(r: dict) -> list | None:
+    """Konsens-Umsatzwachstum für Jahr 1 (laufendes GJ) und Jahr 2 (nächstes GJ); fehlt eines, gilt dort das
+    Modellwachstum. Ohne beide: None."""
+    near = [_v(r.get("rev_growth_cy")), _v(r.get("rev_growth_ny"))]
+    if all(x is None for x in near):
+        return None
+    return [None if x is None else _clip(x, G_NEAR_MIN, G_NEAR_MAX) for x in near]
 
 
 def growth_rate(r: dict, g_max: float = G_MAX) -> float | None:
@@ -117,13 +129,17 @@ def shorter_cap(cap: int) -> int:
     return CAP_NARROW if cap == CAP_WIDE else CAP_NONE
 
 
-def _path(cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW) -> tuple[list[float], float]:
+def _path(cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW,
+          near: list | None = None) -> tuple[list[float], float]:
     """Ausschüttbare Zahlungen Jahre 1-15 und Zahlung im Jahr 16 (Basis der ewigen Rente).
-    Wachstum g bis Jahr 5 (bei CAP_NONE bis Jahr 3), danach linear bis zum Jahr `cap` auf 3 %."""
+    Wachstum g bis Jahr 5 (bei CAP_NONE bis Jahr 3), danach linear bis zum Jahr `cap` auf 3 %.
+    near: Wachstum für Jahr 1 und 2 (Konsens), None-Einträge = g."""
     flows, e = [], cf0
     hold = 5 if cap > 7 else 3
     for t in range(1, YEARS + 1):
         gt = g if t <= hold else G_FADE_TO if t >= cap else g + (G_FADE_TO - g) * (t - hold) / (cap - hold)
+        if near and t <= len(near) and near[t - 1] is not None:
+            gt = near[t - 1]
         e *= 1 + gt
         rein = 0.0 if roic is None else _clip(max(gt, 0.0) / roic, 0.0, 0.9)
         flows.append(e * (1 - rein))
@@ -132,22 +148,23 @@ def _path(cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW) -> tu
     return flows, e11 * (1 - rein)
 
 
-def value(cf0: float, g: float, roic: float | None, rate: float, at_year: int = 0, cap: int = CAP_NARROW) -> float:
+def value(cf0: float, g: float, roic: float | None, rate: float, at_year: int = 0, cap: int = CAP_NARROW,
+          near: list | None = None) -> float:
     """Barwert je Aktie; at_year=n: Wert in n Jahren (Zahlungen ab Jahr n+1)."""
-    flows, cf11 = _path(cf0, g, roic, cap)
+    flows, cf11 = _path(cf0, g, roic, cap, near)
     pv = sum(cf / (1 + rate) ** (t - at_year) for t, cf in enumerate(flows, 1) if t > at_year)
     return pv + cf11 / (rate - G_TERMINAL) / (1 + rate) ** (YEARS - at_year)
 
 
-def irr(price: float, cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW) -> float:
+def irr(price: float, cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW, near: list | None = None) -> float:
     lo, hi = G_TERMINAL + 0.005, 0.60
-    if value(cf0, g, roic, lo, cap=cap) <= price:
+    if value(cf0, g, roic, lo, cap=cap, near=near) <= price:
         return lo
-    if value(cf0, g, roic, hi, cap=cap) >= price:
+    if value(cf0, g, roic, hi, cap=cap, near=near) >= price:
         return hi
     for _ in range(60):
         mid = (lo + hi) / 2
-        if value(cf0, g, roic, mid, cap=cap) > price:
+        if value(cf0, g, roic, mid, cap=cap, near=near) > price:
             lo = mid
         else:
             hi = mid
@@ -298,16 +315,20 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
                 "reason": "Keine belastbare Ertragsbasis (Verlust, negativer Cashflow oder fehlende Daten)."}
 
     cap = cap_for(q_score)
+    near = None if r.get("is_reit") else near_growth(r)
+    gn = [g if x is None else x for x in near] if near else [g, g]
+    g5 = ((1 + gn[0]) * (1 + gn[1]) * (1 + g) ** 3) ** 0.2 - 1   # Ø Wachstum Jahre 1-5
     # Markt zweifelt: eingepreistes Wachstum weit unter der Modellannahme -> kürzere Vorteils-Periode
     ig0 = implied_growth(price, cf0, roic, coe, cap)
-    doubt = ig0 is not None and g - ig0 > DOUBT_GAP
+    doubt = ig0 is not None and g5 - ig0 > DOUBT_GAP
     if doubt:
-        unc.append((2, f"Markt zweifelt: Kurs preist {ig0:+.1%} Wachstum ein, Modell rechnet mit {g:+.1%} – "
+        unc.append((2, f"Markt zweifelt: Kurs preist {ig0:+.1%} Wachstum ein, Modell rechnet mit {g5:+.1%} – "
                        "Wettbewerbsvorteil kürzer angesetzt"))
         cap = shorter_cap(cap)
-    er = irr(price, cf0, g, roic, cap)
-    methods = [{"name": "DCF zu Eigenkapitalkosten", "value": value(cf0, g, roic, coe, cap=cap),
-                "detail": f"{src}: {cf0:.2f} je Aktie, Wachstum {g:.1%} bis Jahr {5 if cap > 7 else 3}, "
+    near_txt = (f"Jahr 1–2 Konsens {gn[0]:+.1%} / {gn[1]:+.1%}, danach " if near else "")
+    er = irr(price, cf0, g, roic, cap, near)
+    methods = [{"name": "DCF zu Eigenkapitalkosten", "value": value(cf0, g, roic, coe, cap=cap, near=near),
+                "detail": f"{src}: {cf0:.2f} je Aktie, {near_txt}Wachstum {g:.1%} bis Jahr {5 if cap > 7 else 3}, "
                           f"Auslaufen auf 3 % bis Jahr {cap} (Qualität), Reinvestition über "
                           f"{roic_src}{f' {roic:.0%}' if roic else ''}, Eigenkapitalkosten {coe:.0%} "
                           f"(Unsicherheit {pre_level})"}]
@@ -341,7 +362,7 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
     level = _level(sum(p for p, _ in unc))
     mos = MOS[level]
     hurdle = hurdle_for(max(coe, COE_BY_LEVEL[level]) if not r.get("is_reit") else coe)
-    buy = value(cf0, g, roic, hurdle, cap=cap)
+    buy = value(cf0, g, roic, hurdle, cap=cap, near=near)
 
     er_score = scale(er, ER_PTS)
     if level == "sehr hoch":
@@ -350,16 +371,16 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
     hist_ratio_used = None if hist_ratio is None else min(hist_ratio, HIST_RATIO_MAX)
     ig = ig0
 
-    def scen(gg, dm, c):
+    def scen(gg, dm, c, nr=None):
         gg = _clip(gg, G_MIN, G_MAX)
-        return {"er": round(irr(price, cf0 * dm, gg, roic, c), 3),
-                "value": round(value(cf0 * dm, gg, roic, coe, cap=c), 2), "growth": round(gg, 3)}
+        return {"er": round(irr(price, cf0 * dm, gg, roic, c, nr), 3),
+                "value": round(value(cf0 * dm, gg, roic, coe, cap=c, near=nr), 2), "growth": round(gg, 3)}
 
-    flows, _ = _path(cf0, g, roic, cap)
+    flows, _ = _path(cf0, g, roic, cap, near)
     # Fairer Wert in n Jahren: heutiger fairer Wert (beide Methoden) fortgeschrieben mit dem DCF-Pfad
-    y = [fv * value(cf0, g, roic, coe, at_year=n, cap=cap) / methods[0]["value"] for n in (1, 2, 3)]
+    y = [fv * value(cf0, g, roic, coe, at_year=n, cap=cap, near=near) / methods[0]["value"] for n in (1, 2, 3)]
     # Kurs in n Jahren, wenn die Bewertung bleibt (Markt verlangt weiter dieselbe Rendite, keine Neubewertung)
-    keep = [value(cf0, g, roic, er, at_year=n, cap=cap) for n in (1, 2, 3)]
+    keep = [value(cf0, g, roic, er, at_year=n, cap=cap, near=near) for n in (1, 2, 3)]
     total3 = (y[2] + sum(flows[:3])) / price - 1
     return {
         "er": round(er, 4), "hurdle": round(hurdle, 3), "buy_price": round(buy, 2),
@@ -374,7 +395,8 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
         "owner_yield": round(cf0 / price, 4), "market_doubt": doubt,
         "buy_out_of_reach": bool(buy < OUT_OF_REACH * price),
         "scenarios": {"bear": scen(min(g + BEAR["dg"], BEAR["g_max"]), BEAR["cf"], CAP_NONE),
-                      "bull": scen(g + BULL["dg"], BULL["cf"], cap)},
+                      "bull": scen(g + BULL["dg"], BULL["cf"], cap, near)},
+        "growth_near": None if not near else [round(x, 3) for x in gn], "growth_5y": round(g5, 3),
         "y1": round(y[0], 2), "y2": round(y[1], 2), "y3": round(y[2], 2),
         "keep": [round(x, 2) for x in keep], "dist3": round(sum(flows[:3]), 2),
         "cagr3": round((1 + total3) ** (1 / 3) - 1, 3) if total3 > -1 else None,

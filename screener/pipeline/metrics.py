@@ -10,6 +10,7 @@ import datetime as dt
 import math
 
 FINANCIAL_SECTORS = {"Financial Services", "Financials"}
+MIN_EST_ANALYSTS = 3   # Konsens-Schätzungen erst ab 3 Analysten
 # Nur echte Bilanz-Finanzierer werden wie Banken bewertet. Zahlungsnetzwerke (Visa, Mastercard), Ratingagenturen,
 # Datenanbieter und Börsen sind normale Unternehmen mit Cashflow, EBITDA und ROIC.
 BANK_LIKE_KEYWORDS = ("bank", "insurance", "mortgage", "capital markets", "financial conglomerates", "reinsurance")
@@ -117,10 +118,33 @@ def derive(info: dict, last_close: float | None, fx_to_eur: dict[str, float]) ->
     m["eps_ttm"] = eps_ttm
     m["eps_fwd"] = eps_fwd
     m["loss_making"] = eps_ttm is not None and eps_ttm <= 0
-    m["eps_growth_fwd"] = (eps_fwd / eps_ttm - 1) if (eps_fwd and eps_ttm and eps_ttm > 0) else None
+    # Erwartetes Gewinnwachstum: Konsens nächstes GJ gegen Konsens laufendes GJ (beides dieselbe, meist bereinigte
+    # Abgrenzung). Nur ohne Konsens Rückfall auf Prognose / Ist-Gewinn 12 M. (mischt bereinigt und GAAP).
+    est = info.get("estimates") or {}
+    e0, e1 = est.get("eps_0y") or {}, est.get("eps_+1y") or {}
+    a0, a1 = _num(e0.get("avg")), _num(e1.get("avg"))
+    if a0 and a1 and a0 > 0 and (_num(e1.get("n")) or 0) >= MIN_EST_ANALYSTS:
+        m["eps_growth_fwd"], m["eps_growth_fwd_src"] = a1 / a0 - 1, "Konsens nächstes GJ / laufendes GJ"
+    else:
+        m["eps_growth_fwd"] = (eps_fwd / eps_ttm - 1) if (eps_fwd and eps_ttm and eps_ttm > 0) else None
+        m["eps_growth_fwd_src"] = "Prognose / Gewinn 12 M." if m["eps_growth_fwd"] is not None else None
     if m["eps_growth_fwd"] is not None and not -0.9 < m["eps_growth_fwd"] < 5:
         flags.append("eps_wachstum_unplausibel")
         m["eps_growth_fwd"] = None
+    # Konsens-Umsatzwachstum laufendes und nächstes GJ [SCHÄTZUNG] – für die Jahre 1-2 der Bewertung
+    r0, r1 = est.get("rev_0y") or {}, est.get("rev_+1y") or {}
+    rv0, rv1, ago = _num(r0.get("avg")), _num(r1.get("avg")), _num(r0.get("year_ago"))
+    g_cy = (rv0 / ago - 1) if (rv0 and ago and ago > 0) else _num(r0.get("growth"))
+    g_ny = (rv1 / rv0 - 1) if (rv1 and rv0 and rv0 > 0) else _num(r1.get("growth"))
+    if (_num(r0.get("n")) or 0) < MIN_EST_ANALYSTS:
+        g_cy = None
+    if (_num(r1.get("n")) or 0) < MIN_EST_ANALYSTS:
+        g_ny = None
+    for k, g in (("rev_growth_cy", g_cy), ("rev_growth_ny", g_ny)):
+        if g is not None and not -0.5 < g < 1.0:
+            flags.append("umsatzprognose_unplausibel")
+            g = None
+        m[k] = g
     m["peg"] = (m["pe_fwd"] / (m["eps_growth_fwd"] * 100)
                 if m["pe_fwd"] and m["eps_growth_fwd"] and m["eps_growth_fwd"] > 0.01 else None)
 
