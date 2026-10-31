@@ -146,7 +146,8 @@ const COLS = [
   { k: "price", t: "Kurs", n: true, r: (r) => money(r.price, r.currency) },
   { k: "er", t: "Erw. Rendite", n: true, v: (r) => V(r, "er"), r: erCell },
   { k: "hurdle", t: "Hürde", n: true, v: (r) => V(r, "hurdle"), r: (r) => pctPlain(V(r, "hurdle"), 0) },
-  { k: "buy", t: "Kaufkurs", n: true, v: (r) => V(r, "buy_price"), r: (r) => money(V(r, "buy_price"), "") },
+  { k: "buy", t: "Kaufkurs", n: true, v: (r) => V(r, "buy_price"),
+    r: (r) => V(r, "buy_out_of_reach") ? '<span class="small muted" title="Kaufkurs mehr als 50 % unter dem Kurs">außer Reichweite</span>' : money(V(r, "buy_price"), "") },
   { k: "to_buy", t: "Kurs vs. Kaufkurs", n: true, v: toBuyPrice,
     r: (r) => { const d = toBuyPrice(r); return !isNum(d) ? dash : d <= 0 ? '<span class="tag zone">IM KAUFBEREICH</span>' : `<span class="small">+${F[0].format(d * 100)} %</span>`; } },
   { k: "fv", t: "Fairer Wert", n: true, v: (r) => V(r, "fair_value"), r: (r) => money(V(r, "fair_value"), "") },
@@ -177,6 +178,7 @@ function dataCell(r) {
 const PRESETS = [
   { id: "einig", label: "★ Alle drei Methoden einig", f: (r) => !!r.methods_agree },
   { id: "kandidat", label: "Gute Aktien im Kaufbereich", f: (r) => r.verdict_code === "kandidat" },
+  { id: "zweifel", label: "Günstig, aber Markt zweifelt", f: (r) => r.verdict_code === "beobachten" && /Markt zweifelt/.test(r.verdict || "") },
   { id: "nahe", label: "Gute Aktien ≤ 10 % über Kaufkurs", f: (r) => r.q_score >= 7 && isNum(toBuyPrice(r)) && toBuyPrice(r) > 0 && toBuyPrice(r) <= 0.10 },
   { id: "top", label: "Top-Qualität (≥ 8,5)", f: (r) => r.q_score >= 8.5 },
   { id: "guenstig", label: "Solide & günstig (Q ≥ 5, erw. Rendite ≥ 11 %)", f: (r) => r.q_score >= 5 && V(r, "er") >= 0.11 && V(r, "uncertainty") !== "sehr hoch" },
@@ -210,6 +212,7 @@ async function load() {
   REPO_WATCH.forEach((s) => WATCH.add(s));
   health();
   kpis();
+  topPicks();
   fillSelects();
   presets();
   bind();
@@ -243,12 +246,29 @@ function kpis() {
   $("#kpis").innerHTML = [
     ["Universum", m.universe, `${m.rows} mit Daten · ${rated.length} mit Rating`],
     ["Methoden einig", ROWS.filter((r) => r.methods_agree).length, "Quant, Rendite und fairer Wert grün", "einig"],
-    ["Im Kaufbereich", cnt("kandidat"), "Qualität ≥ 7, Rendite ≥ Hürde", "kandidat"],
+    ["Im Kaufbereich", cnt("kandidat"), "Qualität ≥ 7, Rendite ≥ Hürde, stabil", "kandidat"],
     ["Nahe Kaufbereich", near, "Qualität ≥ 7, ≤ 10 % über Kaufkurs", "nahe"],
     ["Gut, aber zu teuer", cnt("beobachten_teuer"), "Kaufkurs merken", "teuer"],
     ["SEC-geprüft", secAll ? `${secOk}/${secAll}` : "–", "US-Gewinn & EPS bestätigt"],
   ].map(([t, v, s, p]) => `<div class="kpi" ${p ? `data-preset="${p}"` : ""}><span>${t}</span><b>${v}</b><small>${s}</small></div>`).join("");
   document.querySelectorAll(".kpi[data-preset]").forEach((k) => k.onclick = () => setPreset(k.dataset.preset));
+}
+
+/* ---------- Interessant heute: kurze Liste ganz oben ---------- */
+function topPicks() {
+  const el = $("#top-picks");
+  if (!el) return;
+  const picks = ROWS.filter((r) => r.verdict_code === "kandidat").sort((a, b) => (b.score || 0) - (a.score || 0));
+  const doubt = ROWS.filter((r) => r.verdict_code === "beobachten" && /Markt zweifelt/.test(r.verdict || "")).length;
+  const row = (r) => `<tr data-s="${esc(r.symbol)}"><td class="l"><div class="name"><b>${esc(r.symbol)}</b><small>${esc(r.name)}</small></div></td>
+      <td class="n">${scoreBadge(r.score)}</td><td class="n">${scoreBadge(r.q_score)}</td><td class="n">${erCell(r)}</td>
+      <td class="n">${money(r.price, r.currency)}</td><td class="n">${money(V(r, "buy_price"), r.currency)}</td>
+      <td class="l small">${esc(V(r, "uncertainty") || "—")}</td></tr>`;
+  el.innerHTML = `<h3>Interessant heute · gute Unternehmen im Kaufbereich, Kurs oder Schätzungen stabil</h3>
+    ${picks.length ? `<div class="table-wrap"><table class="mini picks"><thead><tr><th class="l">Aktie</th><th>Rating</th><th>Qualität</th><th>Erw. Rendite</th><th>Kurs</th><th>Kaufkurs</th><th class="l">Unsicherheit</th></tr></thead>
+      <tbody>${picks.map(row).join("")}</tbody></table></div>` : '<p class="small muted">Heute erfüllt keine Aktie alle Bedingungen.</p>'}
+    <p class="note">Kandidaten für die Einzelanalyse, keine Kaufempfehlung.${doubt ? ` Weitere ${doubt} Aktien sind rechnerisch günstig, aber der Markt zweifelt (Kurs schwach, keine steigenden Schätzungen) – Preset „Günstig, aber Markt zweifelt“.` : ""}</p>`;
+  el.onclick = (e) => { const tr = e.target.closest("tr[data-s]"); if (tr) openDetail(tr.dataset.s); };
 }
 
 function fillSelects() {
@@ -444,7 +464,7 @@ function method() {
     <dl class="kv">${Object.entries(m.sources).map(([k, v]) => `<dt>${esc(k)}</dt><dd style="font-family:var(--sans)">${esc(v)}</dd>`).join("")}</dl>
     <h4>Devisenkurse (1 Einheit → EUR)</h4>
     <dl class="kv">${Object.entries(m.fx_to_eur).filter(([k]) => k !== "GBp").map(([k, v]) => `<dt>${esc(k)}</dt><dd>${F[2].format(v)}</dd>`).join("")}</dl>`;
-  $("#method-panel").innerHTML = `<h3>Methodik (Modell 3) · Ziel: gute Aktien zu einem interessanten Kaufkurs</h3>
+  $("#method-panel").innerHTML = `<h3>Methodik (Modell 4) · Ziel: gute Aktien zu einem interessanten Kaufkurs</h3>
     <p class="small">Das Modell verbindet die drei Ansätze professioneller Investoren: <b>Quant-Faktoren</b> (Value, Quality, Momentum: über Jahrzehnte belegt, u.a. Fama-French, Asness, Novy-Marx),
     <b>erwartete Rendite</b> (Frage eines Hedgefonds: „Was verdiene ich zu diesem Kurs?“) und <b>fairer Wert mit Sicherheitsmarge</b> (Morningstar-Logik).
     Grundlage sind geprüfte Jahresabschlüsse (SEC 10-K bzw. Yahoo), keine Analysten-Gewinnprognosen. Alle Skalen sind absolut, es gibt keine erzwungene Verteilung.</p>
@@ -453,7 +473,7 @@ function method() {
     Qualität &lt; 5 → höchstens 5 (&lt; 4 → höchstens 4) · finanzielle Schieflage → höchstens 4 · Gewinnqualität prüfen → höchstens 6 · erwartete Rendite unter 8 % → höchstens 6 · keine belastbare Bewertung → höchstens 6.</p>
     <ul class="small">
       <li><b>Bewertung</b> = 60 % erwartete Rendite (2 % → 0 · 5 % → 2 · 8 % → 4 · 10 % → 5,5 · 12 % → 7 · 15 % → 8,5 · ≥ 20 % → 10)
-        + 20 % gegenüber der eigenen Bewertungshistorie (Owner-Earnings-Rendite heute ÷ Median 5 J.: 0,7 → 2 · 1,0 → 5 · 1,5 → 8,5 · 2 → 10)
+        + 20 % gegenüber der eigenen Bewertungshistorie (Owner-Earnings-Rendite heute ÷ Median 5 J.: 0,7 → 2 · 1,0 → 5 · ab 1,5 → 8,5; mehr zählt nicht, alte Hype-Bewertungen sind kein Maßstab)
         + 20 % gegenüber der Vergleichsgruppe (Perzentil von Owner-Earnings-Rendite, FCF-Rendite und EV/EBITDA).</li>
       <li><b>Momentum</b>: Kursentwicklung der letzten 12 Monate ohne den letzten Monat, Perzentil im Universum. Bremst „billige“ Aktien, die weiter fallen (Value-Falle).</li>
       <li><b>Revisionen</b>: Änderung der Konsens-Gewinnschätzung über 90 Tage (−10 % → 0 · 0 → 5 · +10 % → 10) und Saldo aus Anhebungen und Senkungen über 30 Tage.</li>
@@ -469,19 +489,22 @@ function method() {
         Normalisiert über die <b>Median-Marge der letzten 5 Jahre</b> × Umsatz je Aktie. Einmalzahlungen wie Steuernachzahlungen oder Kaufpreis-Nachzahlungen verzerren so kein Jahr.
         Liegt das letzte Jahr über dem Median, zählt das Mittel; steigt die Marge strukturell (über 1 Pp. p.a.), das letzte Jahr. Zykliker: immer der Median.
         Banken: ROE (Median 5 J.) × Buchwert. REITs: Dividende.</li>
-      <li><b>Wachstum</b> = ⅔ Umsatz-CAGR (der niedrigere Wert aus 5 und bis zu 10 Jahren) + ⅓ aktuelles Umsatzwachstum, begrenzt auf −3 … +15 %.</li>
+      <li><b>Wachstum</b> = Umsatz-CAGR (der niedrigere Wert aus 5 und bis zu 10 Jahren) und aktuelles Umsatzwachstum, der niedrigere Wert zählt doppelt, begrenzt auf −3 … +15 %.
+        <b>Deckel durch die Gegenwart</b>: höchstens der höhere Wert aus aktuellem Umsatzwachstum und erwartetem Gewinnwachstum. Prognosen senken das Wachstum nur, sie heben es nie. So überstimmt ein vergangener Boom keinen Wendepunkt.</li>
       <li><b>Wettbewerbsvorteil</b>: Das Wachstum gilt 5 Jahre und läuft dann linear auf 3 % aus, und zwar bis Jahr 15 bei Qualität ≥ 8, bis Jahr 10 bei ≥ 6,5, sonst ab Jahr 3 bis Jahr 7. Danach gelten 3 % dauerhaft.
-        So macht es auch Morningstar: Je breiter der Burggraben, desto länger halten Überrenditen.</li>
+        So macht es auch Morningstar: Je breiter der Burggraben, desto länger halten Überrenditen.
+        <b>Markt zweifelt</b>: Liegt das eingepreiste Wachstum mehr als 8 Pp. unter der Modellannahme, wird die Periode um eine Stufe verkürzt (15 → 10 → 7 Jahre) und die Unsicherheit steigt.</li>
       <li><b>Wachstum kostet Kapital</b> (Werttreiber-Formel aus McKinsey „Valuation“): Ausschüttbar ist nur Ertragskraft × (1 − Wachstum ÷ ROIC).
-        Als ROIC gilt das Mittel aus ROIC mit und ohne Goodwill, Median 5 J., begrenzt auf 6–40 %. Bei negativem Kapital trotz Gewinn (Rückkäufe) wird ein sehr hoher ROIC angesetzt.</li>
+        Als ROIC gilt der ROIC mit Goodwill, Median 5 J., begrenzt auf 6–40 % (Wachstum über Zukäufe kostet Goodwill). Bei negativem Kapital trotz Gewinn (Rückkäufe) wird ein sehr hoher ROIC angesetzt.</li>
       <li><b>Erwartete Rendite</b> = der Zinssatz, bei dem der Barwert dieser Zahlungen genau dem Kurs entspricht. Das ist die Rendite p.a., die ein Käufer zum heutigen Kurs erhält, wenn die Annahmen eintreffen.</li>
       <li><b>Reverse-DCF</b>: welches Wachstum (J. 1–5) der Kurs bei den Eigenkapitalkosten einpreist, zum Vergleich mit dem bisher gelieferten.</li>
-      <li><b>Hürde und Kaufkurs</b>: Hürde = Eigenkapitalkosten + 2 Pp. (Qualität ≥ 7,5), + 3 Pp. (≥ 6), sonst + 4 Pp. Der Kaufkurs ist der Kurs, bei dem die erwartete Rendite die Hürde erreicht.</li>
+      <li><b>Hürde und Kaufkurs</b>: Hürde = Eigenkapitalkosten + 2 Pp. Das Risiko steckt schon in den Eigenkapitalkosten, es wird nicht ein zweites Mal aufgeschlagen. Der Kaufkurs ist der Kurs, bei dem die erwartete Rendite die Hürde erreicht. Liegt er mehr als 50 % unter dem Kurs, steht dort „außer Reichweite“.</li>
+      <li><b>Szenarien</b>: Bär = Schrumpfung (Wachstum höchstens −2 %, Ertragskraft −25 %, Wettbewerbsvorteil nur bis Jahr 7) · Bulle = Wachstum +3 Pp., Ertragskraft +10 %.</li>
     </ul>
     <h4>4 · Fairer Wert und Unsicherheit (Morningstar-Logik)</h4>
-    <p class="small">Fairer Wert = Mittel aus dem DCF zu den Eigenkapitalkosten und der eigenen Bewertungshistorie (Ertragskraft ÷ Median-Owner-Earnings-Rendite der letzten 5 Jahre).
+    <p class="small">Fairer Wert = 75 % DCF zu den Eigenkapitalkosten + 25 % eigene Bewertungshistorie (Ertragskraft ÷ Median-Owner-Earnings-Rendite der letzten 5 Jahre, höchstens das 1,5-Fache der heutigen Bewertung).
     <b>Unsicherheit</b> gering / mittel / hoch / sehr hoch, aus Punkten für schwankende Margen, Verlustjahre, Zyklik, kurze Historie, widersprüchliches Wachstum, hohe Verschuldung, Bank/REIT,
-    Streuung der Methoden und einen Kurs weit unter dem Rechenwert (dann preist der Markt meist ein Risiko ein, das die Zahlen nicht zeigen). Sie bestimmt die Eigenkapitalkosten (8 / 9 / 10 / 11 %, Banken mind. 10 %, REITs 8,5 %)
+    Streuung der Methoden, Zweifel des Marktes (eingepreistes Wachstum weit unter der Annahme) und einen Kurs weit unter dem Rechenwert (dann preist der Markt meist ein Risiko ein, das die Zahlen nicht zeigen). Sie bestimmt die Eigenkapitalkosten (8 / 9 / 10 / 11 %, Banken mind. 10 %, REITs 8,5 %)
     und die nötige Sicherheitsmarge (15 / 25 / 35 / 50 %). Über +150 % zum Kurs bzw. ab 40 % erwarteter Rendite wird nicht bewertet, das ist fast immer ein Datenfehler.</p>
     <h4>5 · Bilanz-Forensik</h4>
     <ul class="small">
@@ -501,7 +524,9 @@ function method() {
     </ul>
     <h4>7 · Urteil</h4>
     <ul class="small">
-      <li><b>Gutes Unternehmen im Kaufbereich</b>: Qualität ≥ 7, Kurs ≤ Kaufkurs, keine Bilanz-Warnung, Unsicherheit nicht „sehr hoch“. Ein Kandidat bleibt Kandidat, bis der Kurs mehr als 5 % über dem Kaufkurs liegt.</li>
+      <li><b>Gutes Unternehmen im Kaufbereich</b>: Qualität ≥ 7, Kurs ≤ Kaufkurs, keine Bilanz-Warnung, Unsicherheit nicht „sehr hoch“ <b>und stabil</b>: Momentum nicht im unteren Drittel des Universums oder steigende Gewinnschätzungen (Revisionen ≥ 6). Ein Kandidat bleibt Kandidat, bis der Kurs mehr als 5 % über dem Kaufkurs liegt.</li>
+      <li><b>Günstig, aber Markt zweifelt</b>: wie oben, aber Kurs schwach und keine steigenden Schätzungen. Rechnerisch billige Aktien, die weiter fallen, sind die häufigste Value-Falle. Erst die Stabilisierung abwarten.</li>
+      <li><b>Mehrere Aktiengattungen</b> (z. B. FOX/FOXA): Kandidat ist nur die größte Gattung, die übrigen verweisen darauf.</li>
       <li><b>Nahe Kaufbereich</b>: Kurs höchstens 10 % über dem Kaufkurs. <b>Auf Kaufkurs warten</b>: darüber, der Kaufkurs steht dabei.</li>
       <li><b>Solide Qualität</b> (5–7): günstig (Kurs ≤ Kaufkurs), fair (erwartete Rendite ≥ 8 %) oder zu teuer. <b>Schwache Qualität</b> (&lt; 5): meiden; bei niedrigem Kurs mit dem Hinweis „Value-Falle möglich“.</li>
       <li>Chart (Trend, Buy-Zonen) und Analysten-Kursziele fließen <b>nicht</b> ins Rating ein. Sie dienen der Einordnung und dem Timing.</li>
@@ -665,14 +690,15 @@ function openDetail(sym) {
   const decision = isNum(v.er) ? `
       <dl class="kv big-kv">
         <dt>Kurs</dt><dd>${money(r.price, r.currency)}</dd>
-        <dt>Erwartete Rendite</dt><dd><b>${pctPlain(v.er)} p.a.</b> <span class="muted small">(Hürde ${pctPlain(v.hurdle, 0)} · Bear ${pctPlain(sc.bear && sc.bear.er)} · Bull ${pctPlain(sc.bull && sc.bull.er)})</span></dd>
-        <dt>Kaufkurs</dt><dd><b>≤ ${money(v.buy_price, r.currency)}</b> <span class="muted small">(dort erreicht die Rendite die Hürde)</span></dd>
+        <dt>Erwartete Rendite</dt><dd><b>${pctPlain(v.er)} p.a.</b> <span class="muted small">(Hürde ${pctPlain(v.hurdle, 0)} · Bär/Schrumpfung ${pctPlain(sc.bear && sc.bear.er)} · Bulle ${pctPlain(sc.bull && sc.bull.er)})</span></dd>
+        <dt>Kaufkurs</dt><dd><b>≤ ${money(v.buy_price, r.currency)}</b> <span class="muted small">(${v.buy_out_of_reach ? "außer Reichweite: mehr als 50 % unter dem Kurs" : "dort erreicht die Rendite die Hürde"})</span></dd>
         <dt>Abstand zum Kaufkurs</dt><dd>${toBuy <= 0 ? '<span class="ok-line" style="display:inline">● im Kaufbereich</span>' : `Kurs liegt ${pctPlain(toBuy, 0)} darüber`}</dd>
         <dt>Eingepreistes Wachstum</dt><dd>${isNum(v.implied_growth) ? `${pctN(v.implied_growth)} p.a. (J. 1–5) · geliefert ${pctN(v.growth_hist)}` : '<span class="muted">nicht sinnvoll (ROIC ≤ Kapitalkosten oder fehlend)</span>'}</dd>
         <dt>Fairer Wert</dt><dd>${money(v.fair_value, r.currency)} <span class="muted small">(${pctN(v.upside, 0)} · Spanne ${money(sc.bear && sc.bear.value, "")} – ${money(sc.bull && sc.bull.value, "")})</span></dd>
         <dt>Unsicherheit</dt><dd>${esc(v.uncertainty)} <span class="muted small">→ Eigenkapitalkosten ${pctPlain(v.coe, 0)}, nötige Sicherheitsmarge ${pctPlain(v.mos_required, 0)}</span></dd>
       </dl>
       ${igTxt ? `<div class="note">Reverse-DCF: ${igTxt}.</div>` : ""}
+      ${v.market_doubt ? `<div class="flag-list">Markt zweifelt: Der Kurs preist deutlich weniger Wachstum ein als das Modell. Deshalb gilt der Wettbewerbsvorteil nur bis Jahr ${v.cap_year}, und die Unsicherheit ist höher.</div>` : ""}
       ${(v.uncertainty_why || []).length ? `<div class="note">Unsicherheit durch: ${esc(v.uncertainty_why.join(" · "))}</div>` : ""}
       <h4>Drei Profi-Methoden</h4>
       ${lensHtml}

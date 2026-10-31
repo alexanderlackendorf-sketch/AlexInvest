@@ -9,6 +9,9 @@ Rating = 40 % Bewertung + 35 % Qualität + 15 % Momentum + 10 % Gewinnrevisionen
   Deckel            Qualität < 5 -> max. 5 (< 4 -> max. 4); Bilanz-Warnsignal -> max. 4;
                     erwartete Rendite < 8 % -> max. 6; Bewertung nicht möglich -> max. 6
 Drei Profi-Methoden als Gegenprobe (Ampeln): Quant-Faktoren, erwartete Rendite, fairer Wert mit Sicherheitsmarge.
+"Kandidat" verlangt zusätzlich eine Stabilisierung: Momentum nicht im unteren Drittel des Universums oder
+positive Gewinnrevisionen (Revisions-Score >= 6). Sonst "günstig, aber Markt zweifelt" (fallendes Messer).
+Mehrere Aktiengattungen eines Unternehmens (FOX/FOXA, GOOG/GOOGL): Kandidat ist nur die größte Gattung.
 "Methoden einig" = alle drei grün. Ein Screener spricht kein "Kaufen" aus: bestes Urteil ist
 "Kandidat für Einzelanalyse". Analystenziele fließen nicht ein.
 """
@@ -343,6 +346,7 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
     res["extra_flags"] = [extra_flags[s] for s in df.index]
     res["cyclical_evidenced"] = [cyc_ev.get(s, False) for s in df.index]
     res["peer_group"] = df["peer_group"]
+    res["share_class_of"] = share_classes(df)
     res["metric_pct"] = [
         {m: round(float(pct[m].loc[s]) * 100) for m in pct if pd.notna(pct[m].loc[s])} for s in df.index
     ]
@@ -353,9 +357,26 @@ def _nan_none(x):
     return None if x is None or x != x else x
 
 
+def share_classes(df: pd.DataFrame) -> list:
+    """Je Aktie das Symbol der größten Gattung desselben Unternehmens (gleicher Name), sonst None."""
+    names = df["name"] if "name" in df else pd.Series(None, index=df.index)
+    mcap = pd.to_numeric(df["market_cap_eur"], errors="coerce") if "market_cap_eur" in df else pd.Series(0.0, index=df.index)
+    main = {}
+    for s in df.index:
+        n = names.get(s)
+        if not isinstance(n, str):
+            continue
+        cur = main.get(n)
+        if cur is None or (mcap.get(s) or 0) > (mcap.get(cur) or 0):
+            main[n] = s
+    return [main[names[s]] if isinstance(names.get(s), str) and main.get(names[s]) not in (None, s) else None
+            for s in df.index]
+
+
 WEIGHTS = {"Bewertung": 0.40, "Qualität": 0.35, "Momentum": 0.15, "Revisionen": 0.10}
 VALUE_WEIGHTS = {"Erwartete Rendite": 0.6, "vs. eigene Historie": 0.2, "vs. Vergleichsgruppe": 0.2}
-MODEL_VERSION = 3   # 1: Perzentil-Rangfolge, 2: Qualität + fairer Wert, 3: erwartete Rendite + Faktoren + Forensik
+MODEL_VERSION = 4   # 1: Perzentil-Rangfolge, 2: Qualität + fairer Wert, 3: erwartete Rendite + Faktoren + Forensik,
+#                     4: wie 3, plus Stabilisierung, Markt-Zweifel, Wachstumsdeckel, echtes Bärszenario
 ER_MIN_FOR_GOOD = 0.08
 REV_PTS = [(-0.10, 0), (-0.03, 2.5), (0.0, 5), (0.03, 7.5), (0.10, 10)]
 BREADTH_PTS = [(-0.5, 0), (0.0, 5), (0.5, 10)]
@@ -446,6 +467,8 @@ def lenses(v: dict, price, sector_val, q_pct, mom_pct) -> dict:
 
 
 Q_GOOD, Q_OK = 7.0, 5.0
+MOM_STABLE = 10 / 3   # Momentum-Score (Perzentil × 10) nicht im unteren Drittel
+REV_STABLE = 6.0      # Revisions-Score: Schätzungen werden angehoben
 KAUF_EXIT_TOL = 1.05   # Hysterese: Kandidat bleibt, solange der Kurs max. 5 % über dem Kaufkurs liegt
 NEAR_TOL = 1.10        # "nahe Kaufbereich": Kurs höchstens 10 % über dem Kaufkurs
 
@@ -469,6 +492,11 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
     warn = bool({"bilanz_warnsignal", "gewinnqualitaet_pruefen"} & set(row.get("flags") or []))
     cur = row.get("currency") or ""
     buy_txt = f" · Kaufkurs ≤ {buy:,.2f} {cur}".replace(",", "X").replace(".", ",").replace("X", ".") if buy else ""
+    if buy and v.get("buy_out_of_reach"):
+        buy_txt = " · Kaufkurs außer Reichweite (über 50 % unter Kurs)"
+    mom, rev = _nan_none(row.get("mom_score")), _nan_none(row.get("rev_score"))
+    stable = (mom is not None and mom >= MOM_STABLE) or (rev is not None and rev >= REV_STABLE)
+    twin = row.get("share_class_of")
 
     if q is None or dq == "rot":
         code, text = "nab", "Nicht ausreichend beurteilbar"
@@ -476,7 +504,12 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
         code, text = ("beobachten", "Gutes Unternehmen – Bewertung nicht belastbar") if q >= Q_GOOD else (
             "neutral", "Bewertung nicht belastbar")
     elif q >= Q_GOOD:
-        if in_buy and not warn and v.get("uncertainty") != "sehr hoch":
+        if in_buy and not warn and v.get("uncertainty") != "sehr hoch" and isinstance(twin, str):
+            code, text = "beobachten", f"Gutes Unternehmen im Kaufbereich – weitere Aktiengattung, siehe {twin}"
+        elif in_buy and not warn and v.get("uncertainty") != "sehr hoch" and not stable:
+            code, text = "beobachten", ("Gutes Unternehmen, rechnerisch günstig – aber Markt zweifelt (Kurs schwach, "
+                                        "keine steigenden Schätzungen): auf Stabilisierung warten")
+        elif in_buy and not warn and v.get("uncertainty") != "sehr hoch":
             code, text = "kandidat", "Gutes Unternehmen im Kaufbereich – Kandidat für Einzelanalyse"
         elif in_buy and warn:
             code, text = "beobachten", "Gutes Unternehmen, günstig – aber Bilanz-Warnsignal: erst prüfen"

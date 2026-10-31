@@ -120,14 +120,17 @@ class MetricsTest(unittest.TestCase):
 class RulesTest(unittest.TestCase):
     """Modell 3: Rating, Deckel, Urteil über erwartete Rendite und Kaufkurs."""
 
-    def _row(self, q, er, hurdle=0.10, price=100.0, buy=None, flags=(), prev=None, zone=False, unc="mittel"):
+    def _row(self, q, er, hurdle=0.10, price=100.0, buy=None, flags=(), prev=None, zone=False, unc="mittel",
+             mom=5.0, rev=None, twin=None, out_of_reach=False):
         if buy is None:
             buy = price * (1.1 if er is not None and er >= hurdle else 0.9)
         r = {"q_score": q, "price_score": 6.0, "price": price, "currency": "USD", "coverage": 1.0,
              "flags": list(flags), "trend": "Aufwärtstrend", "dist_sma200": 0.05, "in_buy_zone": zone,
              "buy_zones": [], "earnings_in_days": 3, "q_components": {"Wachstum": 6.0},
+             "mom_score": mom, "rev_score": rev, "share_class_of": twin,
              "valuation": {"er": er, "hurdle": hurdle, "buy_price": buy if er is not None else None,
-                           "fair_value": 120.0 if er is not None else None, "uncertainty": unc}}
+                           "fair_value": 120.0 if er is not None else None, "uncertainty": unc,
+                           "buy_out_of_reach": out_of_reach}}
         return scoring.assess(r, prev)
 
     def test_verdict_matrix(self):
@@ -144,6 +147,24 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(self._row(3.0, 0.05, hurdle=0.14)["verdict_code"], "meiden_schwach")
         self.assertEqual(self._row(None, 0.12)["verdict_code"], "nab")
         self.assertEqual(self._row(8.0, None)["verdict_code"], "beobachten")
+
+    def test_kandidat_needs_stabilization(self):
+        # Kurs im unteren Drittel und keine steigenden Schätzungen -> fallendes Messer, nur beobachten
+        a = self._row(8.0, 0.12, mom=1.0, rev=5.0)
+        self.assertEqual(a["verdict_code"], "beobachten")
+        self.assertIn("Markt zweifelt", a["verdict"])
+        self.assertEqual(self._row(8.0, 0.12, mom=1.0, rev=7.0)["verdict_code"], "kandidat")   # Schätzungen steigen
+        self.assertEqual(self._row(8.0, 0.12, mom=4.0, rev=None)["verdict_code"], "kandidat")  # Kurs stabil
+        self.assertEqual(self._row(8.0, 0.12, mom=None, rev=None)["verdict_code"], "beobachten")
+
+    def test_share_class_and_out_of_reach(self):
+        a = self._row(8.0, 0.12, twin="FOXA")
+        self.assertEqual(a["verdict_code"], "beobachten")
+        self.assertIn("siehe FOXA", a["verdict"])
+        self.assertIn("außer Reichweite", self._row(8.0, 0.05, buy=40.0, out_of_reach=True)["verdict"])
+        df = pd.DataFrame({"name": ["Fox", "Fox", "Other"], "market_cap_eur": [10.0, 20.0, 5.0]},
+                          index=["FOX", "FOXA", "X"])
+        self.assertEqual(scoring.share_classes(df), ["FOXA", None, None])
 
     def test_buy_price_hysteresis(self):
         # Kaufkurs 99: Kurs 100 knapp darüber -> nur als bisheriger Kandidat noch Kandidat
@@ -245,15 +266,18 @@ class ValuationModelTest(unittest.TestCase):
 
     def test_growth(self):
         r = {"rev_cagr": 0.20, "rev_cagr_long": 0.08, "rev_growth": 0.05}
-        self.assertAlmostEqual(valuation.growth_rate(r), (2 * 0.05 + 0.08) / 3)   # Corona raus, niedrigerer Wert doppelt
-        self.assertAlmostEqual(valuation.growth_rate({"rev_cagr": 0.20, "rev_growth": -0.05}), (2 * -0.05 + 0.20) / 3)
+        self.assertAlmostEqual(valuation.growth_rate(r), 0.05)   # (2 x 5 % + 8 %) / 3 = 6 %, gedeckelt auf heute 5 %
+        r2 = {"rev_cagr": 0.20, "rev_cagr_long": 0.08, "rev_growth": 0.05, "eps_growth_fwd": 0.10}
+        self.assertAlmostEqual(valuation.growth_rate(r2), (2 * 0.05 + 0.08) / 3)   # Gewinnprognose hebt den Deckel
+        self.assertAlmostEqual(valuation.growth_rate(dict(r2, flags=["eps_wachstum_unplausibel"])), 0.05)
+        self.assertAlmostEqual(valuation.growth_rate({"rev_cagr": 0.20, "rev_growth": -0.05}), -0.03)   # Wendepunkt
         self.assertFalse(valuation.growth_conflict(r))
         self.assertTrue(valuation.growth_conflict({"rev_cagr": 0.25, "rev_growth": 0.02}))
         self.assertEqual(valuation.growth_rate({"rev_cagr": 0.40}), valuation.G_MAX)
 
     def test_roic_for(self):
-        self.assertAlmostEqual(valuation.roic_for({"roic_med5": 0.10, "roic_ex_gw_med5": 0.30})[0], 0.20)
-        self.assertAlmostEqual(valuation.roic_for({"roic_med5": 0.10, "roic_ex_gw_med5": 0.30, "roic_last": 0.30})[0], 0.25)
+        self.assertAlmostEqual(valuation.roic_for({"roic_med5": 0.10, "roic_ex_gw_med5": 0.30})[0], 0.10)   # mit Goodwill
+        self.assertAlmostEqual(valuation.roic_for({"roic_med5": 0.10, "roic_ex_gw_med5": 0.30, "roic_last": 0.30})[0], 0.20)
         self.assertEqual(valuation.roic_for({"ic_negative_profitable": True})[0], valuation.ROIC_MAX)
         self.assertEqual(valuation.roic_for({})[0], valuation.ROIC_DEFAULT)
 
@@ -275,10 +299,26 @@ class ValuationModelTest(unittest.TestCase):
         self.assertAlmostEqual(v["buy_price"], valuation.value(6.0, 0.08, 0.25, 0.10, cap=15), places=1)
         self.assertAlmostEqual(valuation.irr(v["buy_price"], 6.0, 0.08, 0.25, 15), 0.10, places=3)
         self.assertAlmostEqual(v["hist_ratio"], 0.06 / 0.05)
-        self.assertAlmostEqual(valuation.fair_value(r, 5.0)["hurdle"], 0.12)        # schwache Qualität +4 Pp.
+        self.assertAlmostEqual(valuation.fair_value(r, 5.0)["hurdle"], 0.10)        # kein Qualitäts-Aufschlag mehr
+        self.assertAlmostEqual(v["fair_value"], 0.75 * v["methods"][0]["value"] + 0.25 * v["methods"][1]["value"], places=1)
+        self.assertFalse(v["market_doubt"])
+        self.assertLess(v["scenarios"]["bear"]["growth"], 0)                        # Bär = Schrumpfung
+        self.assertLess(v["scenarios"]["bear"]["value"], v["methods"][0]["value"])
         shaky = valuation.fair_value(self._company(op_margin_std=0.12, loss_years5=2, hist_years=4), 8.0)
         self.assertIn(shaky["uncertainty"], ("hoch", "sehr hoch"))
         self.assertGreater(shaky["coe"], v["coe"])
+
+    def test_market_doubt_and_hist_cap(self):
+        # Kurs 60 bei Ertragskraft 6: Markt preist kaum Wachstum ein, Modell rechnet mit 8 % -> Zweifel
+        base = valuation.fair_value(self._company(price=100.0), 8.0)
+        v = valuation.fair_value(self._company(price=60.0, owner_yield_hist_med=0.02), 8.0)
+        self.assertTrue(v["market_doubt"])
+        self.assertEqual(v["cap_year"], valuation.CAP_NARROW)
+        self.assertEqual(base["cap_year"], valuation.CAP_WIDE)
+        self.assertTrue(any("Markt zweifelt" in t for t in v["uncertainty_why"]))
+        # Historie: Owner-Earnings-Rendite 2 % hieße 50x – begrenzt auf das 1,5-Fache von heute (10 % -> 6,7 %)
+        self.assertAlmostEqual(v["methods"][1]["value"], 6.0 / (0.10 / 1.5), places=1)
+        self.assertAlmostEqual(v["hist_score"], valuation.scale(1.5, valuation.HIST_PTS), places=1)
 
     def test_fair_value_bank(self):
         r = {"price": 50.0, "is_financial": True, "roe_med5": 0.15, "pb": 1.0, "rev_cagr": 0.05, "rev_growth": 0.05,

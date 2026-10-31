@@ -10,19 +10,26 @@ Ertragskraft je Aktie (cf0)
   bei strukturell steigender Marge das letzte Jahr; belegte Zykliker: immer Median).
   Banken/Versicherer: ROE (Median 5 J.) × Buchwert je Aktie. REITs: Dividende je Aktie.
 Wachstum: Umsatz-CAGR (niedrigerer Wert aus 5 und bis 10 J.) und aktuelles Umsatzwachstum, der niedrigere
-  der beiden zählt doppelt,
+  der beiden zählt doppelt, gedeckelt durch die Gegenwart: höchstens der höhere Wert aus aktuellem
+  Umsatzwachstum und erwartetem Gewinnwachstum (Prognosen nur als Deckel nach unten, nie als Basis),
   begrenzt -3 … +15 %; gilt 5 Jahre, läuft dann je nach Wettbewerbsvorteil (Qualität >= 8: bis Jahr 15,
   >= 6,5: bis Jahr 10, sonst ab Jahr 3 bis Jahr 7) linear auf 3 % aus, danach 3 % ewig.
 Reinvestition (Werttreiber-Formel, McKinsey "Valuation"): Wachstum kostet Kapital.
-  Ausschüttbar = Ertragskraft × (1 - Wachstum / ROIC), ROIC Median 5 J. (begrenzt 6-40 %).
+  Ausschüttbar = Ertragskraft × (1 - Wachstum / ROIC), ROIC Median 5 J. mit Goodwill (begrenzt 6-40 %).
+Markt zweifelt: Liegt das eingepreiste Wachstum (Reverse-DCF) mehr als 8 Pp. unter der Modellannahme,
+  wird die Wettbewerbsvorteils-Periode um eine Stufe verkürzt und die Unsicherheit steigt um eine Stufe.
 
 1. Erwartete Rendite = interner Zinsfuß (IRR), bei dem der Barwert dieser Zahlungen dem Kurs entspricht.
 2. Reverse-DCF: Welches Wachstum (J. 1-5) preist der Kurs bei 9 % Eigenkapitalkosten ein?
-3. Fairer Wert = Mittel aus DCF zu Eigenkapitalkosten (nach Unsicherheit 8/9/10/11 %, Banken mind. 10 %,
-   REITs 8,5 %) und eigener Bewertungshistorie (Ertragskraft / Median-Owner-Earnings-Rendite 5 J.).
+3. Fairer Wert = 75 % DCF zu Eigenkapitalkosten (nach Unsicherheit 8/9/10/11 %, Banken mind. 10 %,
+   REITs 8,5 %) + 25 % eigene Bewertungshistorie (Ertragskraft / Median-Owner-Earnings-Rendite 5 J.,
+   höchstens das 1,5-Fache der heutigen Bewertung: alte Hype-Bewertungen werden nicht fortgeschrieben).
    Unsicherheit gering/mittel/hoch/sehr hoch (Morningstar-Logik) -> nötige Sicherheitsmarge 15/25/35/50 %.
-Kaufkurs = Kurs, bei dem die erwartete Rendite die Hürde erreicht:
-  Hürde = Eigenkapitalkosten + 2 Pp. (Qualität >= 7,5), + 3 Pp. (>= 6), sonst + 4 Pp.
+Kaufkurs = Kurs, bei dem die erwartete Rendite die Hürde erreicht: Hürde = Eigenkapitalkosten + 2 Pp.
+  (das Risiko steckt schon in den Eigenkapitalkosten; kein zweiter Aufschlag nach Qualität).
+  Liegt der Kaufkurs mehr als 50 % unter dem Kurs, gilt er als "außer Reichweite".
+Szenarien: Bär = Schrumpfung (Wachstum höchstens -2 %, Ertragskraft -25 %, kurze Vorteils-Periode),
+  Bulle = Wachstum +3 Pp., Ertragskraft +10 %.
 """
 from __future__ import annotations
 
@@ -47,6 +54,13 @@ LEVELS = ["gering", "mittel", "hoch", "sehr hoch"]
 MAX_UPSIDE = 3.0   # darüber fast immer Datenfehler (Währung, Aktiengattung, Abspaltung)
 EXTREME_UPSIDE = 1.5   # darüber: Markt sieht einen Bruch -> Unsicherheit "sehr hoch"
 HIST_YIELD_MIN = 0.035   # eigene Bewertungshistorie höchstens ~28x Ertragskraft (Bewertungsblasen nicht fortschreiben)
+HIST_RATIO_MAX = 1.5     # Rückkehr höchstens zur 1,5-fachen heutigen Bewertung
+W_HIST = 0.25            # Gewicht der eigenen Bewertungshistorie im fairen Wert (Rest: DCF)
+DOUBT_GAP = 0.08         # Modellwachstum mehr als 8 Pp. über dem eingepreisten Wachstum -> Markt zweifelt
+HURDLE_PREMIUM = 0.02
+OUT_OF_REACH = 0.5       # Kaufkurs < 50 % des Kurses -> "außer Reichweite"
+BEAR = {"g_max": -0.02, "dg": -0.04, "cf": 0.75}
+BULL = {"dg": 0.03, "cf": 1.10}
 
 
 def _v(x):
@@ -65,6 +79,16 @@ def hist_growth(r: dict) -> float | None:
     return hist if hist is not None else long
 
 
+def present_growth(r: dict) -> float | None:
+    """Höherer Wert aus aktuellem Umsatzwachstum und erwartetem Gewinnwachstum (ohne unplausible Prognosen)."""
+    now = _v(r.get("rev_growth"))
+    fwd = _v(r.get("eps_growth_fwd"))
+    if fwd is not None and ("eps_wachstum_unplausibel" in (r.get("flags") or []) or abs(fwd) > 0.5):
+        fwd = None
+    vals = [x for x in (now, fwd) if x is not None]
+    return max(vals) if vals else None
+
+
 def growth_rate(r: dict, g_max: float = G_MAX) -> float | None:
     hist, now = hist_growth(r), _v(r.get("rev_growth"))
     if hist is not None and now is not None:
@@ -72,6 +96,9 @@ def growth_rate(r: dict, g_max: float = G_MAX) -> float | None:
         g = (2 * min(hist, now) + max(hist, now)) / 3
     else:
         g = hist if hist is not None else (now * 0.7 if now is not None else None)
+    cap = present_growth(r)
+    if g is not None and cap is not None:
+        g = min(g, cap)   # Wendepunkt: die Vergangenheit darf die Gegenwart nicht überstimmen
     return None if g is None else _clip(g, G_MIN, g_max)
 
 
@@ -84,6 +111,10 @@ def growth_conflict(r: dict) -> bool:
 def cap_for(q_score) -> int:
     q = q_score or 0
     return CAP_WIDE if q >= 8 else CAP_NARROW if q >= 6.5 else CAP_NONE
+
+
+def shorter_cap(cap: int) -> int:
+    return CAP_NARROW if cap == CAP_WIDE else CAP_NONE
 
 
 def _path(cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW) -> tuple[list[float], float]:
@@ -171,12 +202,12 @@ def base_cash_flow(r: dict, cyclical: bool) -> tuple[float | None, str]:
 
 
 def roic_for(r: dict) -> tuple[float, str]:
-    """Rendite auf neu investiertes Kapital: Mittel aus ROIC mit und ohne Goodwill (organisches Wachstum
-    braucht vor allem Sachkapital, Zukäufe kosten Goodwill); liegt das letzte Jahr höher, zählt es zur Hälfte."""
-    med, ex, last = _v(r.get("roic_med5")), _v(r.get("roic_ex_gw_med5")), _v(r.get("roic_last"))
+    """Rendite auf neu investiertes Kapital: ROIC Median 5 J. mit Goodwill (Wachstum über Zukäufe kostet
+    Goodwill; der ROIC ohne Goodwill unterschätzt den Kapitalbedarf); liegt das letzte Jahr höher, zählt es
+    zur Hälfte."""
+    med, last = _v(r.get("roic_med5")), _v(r.get("roic_last"))
     if med is not None:
-        base = (med + ex) / 2 if ex is not None else med
-        src = "ROIC Median 5 J. (Ø mit/ohne Goodwill)" if ex is not None else "ROIC Median 5 J."
+        base, src = med, "ROIC Median 5 J. (mit Goodwill)"
         if last is not None and last > base:
             base, src = (base + last) / 2, src + ", letztes Jahr höher"
         return _clip(base, ROIC_MIN, ROIC_MAX), src
@@ -187,11 +218,9 @@ def roic_for(r: dict) -> tuple[float, str]:
     return ROIC_DEFAULT, "ROIC unbekannt – Annahme 10 %"
 
 
-def hurdle_for(q_score, coe: float) -> float:
-    """Mindestrendite für einen Kauf = Eigenkapitalkosten + Aufschlag als Sicherheitsmarge:
-    +2 Pp. bei Qualität >= 7,5, +3 Pp. bei >= 6, sonst +4 Pp."""
-    q = q_score or 0
-    return coe + (0.02 if q >= 7.5 else 0.03 if q >= 6 else 0.04)
+def hurdle_for(coe: float) -> float:
+    """Mindestrendite für einen Kauf = Eigenkapitalkosten (enthalten schon das Risiko) + 2 Pp."""
+    return coe + HURDLE_PREMIUM
 
 
 def _level(pts: int) -> str:
@@ -269,6 +298,13 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
                 "reason": "Keine belastbare Ertragsbasis (Verlust, negativer Cashflow oder fehlende Daten)."}
 
     cap = cap_for(q_score)
+    # Markt zweifelt: eingepreistes Wachstum weit unter der Modellannahme -> kürzere Vorteils-Periode
+    ig0 = implied_growth(price, cf0, roic, coe, cap)
+    doubt = ig0 is not None and g - ig0 > DOUBT_GAP
+    if doubt:
+        unc.append((2, f"Markt zweifelt: Kurs preist {ig0:+.1%} Wachstum ein, Modell rechnet mit {g:+.1%} – "
+                       "Wettbewerbsvorteil kürzer angesetzt"))
+        cap = shorter_cap(cap)
     er = irr(price, cf0, g, roic, cap)
     methods = [{"name": "DCF zu Eigenkapitalkosten", "value": value(cf0, g, roic, coe, cap=cap),
                 "detail": f"{src}: {cf0:.2f} je Aktie, Wachstum {g:.1%} bis Jahr {5 if cap > 7 else 3}, "
@@ -276,12 +312,13 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
                           f"{roic_src}{f' {roic:.0%}' if roic else ''}, Eigenkapitalkosten {coe:.0%} "
                           f"(Unsicherheit {pre_level})"}]
     if hist_yield is not None:
-        hy = _clip(hist_yield, HIST_YIELD_MIN, 0.15)
+        hy = _clip(hist_yield, max(HIST_YIELD_MIN, cf0 / price / HIST_RATIO_MAX), 0.15)
         methods.append({"name": "Eigene Bewertungshistorie", "value": cf0 / hy,
                         "detail": f"Ertragskraft {cf0:.2f} / Median-Owner-Earnings-Rendite 5 J. {hist_yield:.1%}"
-                                  + (f" (begrenzt auf {HIST_YIELD_MIN:.1%})" if hy != hist_yield else "")})
+                                  + (f" (begrenzt auf {hy:.1%}: höchstens 28x bzw. 1,5-fache heutige Bewertung)"
+                                     if hy != hist_yield else "")})
     vals = [m["value"] for m in methods]
-    fv = sum(vals) / len(vals)
+    fv = vals[0] if len(vals) == 1 else (1 - W_HIST) * vals[0] + W_HIST * vals[1]
     upside = fv / price - 1
     if methods[0]["value"] / price - 1 > MAX_UPSIDE or er >= 0.40:
         return {"fair_value": None, "er": None,
@@ -303,19 +340,20 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
         unc.append((1, "Kurs weit unter Rechenwert – Markt preist ein Risiko ein (Disruption, Klagen, Zyklus?)"))
     level = _level(sum(p for p, _ in unc))
     mos = MOS[level]
-    hurdle = hurdle_for(q_score, max(coe, COE_BY_LEVEL[level]) if not r.get("is_reit") else coe)
+    hurdle = hurdle_for(max(coe, COE_BY_LEVEL[level]) if not r.get("is_reit") else coe)
     buy = value(cf0, g, roic, hurdle, cap=cap)
 
     er_score = scale(er, ER_PTS)
     if level == "sehr hoch":
         er_score = 5 + (er_score - 5) * 0.5
     hist_ratio = (cf0 / price) / hist_yield if hist_yield else None
-    ig = implied_growth(price, cf0, roic, coe, cap)
+    hist_ratio_used = None if hist_ratio is None else min(hist_ratio, HIST_RATIO_MAX)
+    ig = ig0
 
-    def scen(dg, dm):
-        gg = _clip(g + dg, G_MIN, G_MAX)
-        return {"er": round(irr(price, cf0 * dm, gg, roic, cap), 3),
-                "value": round(value(cf0 * dm, gg, roic, coe, cap=cap), 2), "growth": round(gg, 3)}
+    def scen(gg, dm, c):
+        gg = _clip(gg, G_MIN, G_MAX)
+        return {"er": round(irr(price, cf0 * dm, gg, roic, c), 3),
+                "value": round(value(cf0 * dm, gg, roic, coe, cap=c), 2), "growth": round(gg, 3)}
 
     flows, _ = _path(cf0, g, roic, cap)
     # Fairer Wert in n Jahren: heutiger fairer Wert (beide Methoden) fortgeschrieben mit dem DCF-Pfad
@@ -332,9 +370,11 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
         "roic": round(roic, 3) if roic else None, "roic_src": roic_src,
         "coe": round(coe, 3), "cap_year": cap, "implied_growth": None if ig is None else round(ig, 3),
         "er_score": round(er_score, 1), "hist_ratio": None if hist_ratio is None else round(hist_ratio, 2),
-        "hist_score": None if hist_ratio is None else round(scale(hist_ratio, HIST_PTS), 1),
-        "owner_yield": round(cf0 / price, 4),
-        "scenarios": {"bear": scen(-0.04, 0.85), "bull": scen(0.03, 1.10)},
+        "hist_score": None if hist_ratio_used is None else round(scale(hist_ratio_used, HIST_PTS), 1),
+        "owner_yield": round(cf0 / price, 4), "market_doubt": doubt,
+        "buy_out_of_reach": bool(buy < OUT_OF_REACH * price),
+        "scenarios": {"bear": scen(min(g + BEAR["dg"], BEAR["g_max"]), BEAR["cf"], CAP_NONE),
+                      "bull": scen(g + BULL["dg"], BULL["cf"], cap)},
         "y1": round(y[0], 2), "y2": round(y[1], 2), "y3": round(y[2], 2),
         "keep": [round(x, 2) for x in keep], "dist3": round(sum(flows[:3]), 2),
         "cagr3": round((1 + total3) ** (1 / 3) - 1, 3) if total3 > -1 else None,
