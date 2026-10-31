@@ -320,9 +320,12 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
     g5 = ((1 + gn[0]) * (1 + gn[1]) * (1 + g) ** 3) ** 0.2 - 1   # Ø Wachstum Jahre 1-5
     # Markt zweifelt: eingepreistes Wachstum weit unter der Modellannahme -> kürzere Vorteils-Periode
     ig0 = implied_growth(price, cf0, roic, coe, cap)
-    doubt = ig0 is not None and g5 - ig0 > DOUBT_GAP
+    # Verglichen wird mit dem niedrigeren Wert aus Modell- und Ø-Wachstum: Ein optimistischer Konsens allein
+    # soll nicht als "Markt zweifelt" zählen (sonst würden höhere Prognosen die Bewertung senken)
+    g_doubt = min(g, g5)
+    doubt = ig0 is not None and g_doubt - ig0 > DOUBT_GAP
     if doubt:
-        unc.append((2, f"Markt zweifelt: Kurs preist {ig0:+.1%} Wachstum ein, Modell rechnet mit {g5:+.1%} – "
+        unc.append((2, f"Markt zweifelt: Kurs preist {ig0:+.1%} Wachstum ein, Modell rechnet mit {g_doubt:+.1%} – "
                        "Wettbewerbsvorteil kürzer angesetzt"))
         cap = shorter_cap(cap)
     near_txt = (f"Jahr 1–2 Konsens {gn[0]:+.1%} / {gn[1]:+.1%}, danach " if near else "")

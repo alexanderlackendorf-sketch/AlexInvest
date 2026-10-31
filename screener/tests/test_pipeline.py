@@ -323,6 +323,8 @@ class ValuationModelTest(unittest.TestCase):
         self.assertGreater(up["er"], base["er"])
         self.assertLess(down["er"], base["er"])
         self.assertEqual(up["growth_near"], [0.2, 0.18])
+        self.assertFalse(up["market_doubt"])        # optimistischer Konsens allein ist kein Markt-Zweifel
+        self.assertEqual(up["cap_year"], base["cap_year"])
         self.assertIsNone(base["growth_near"])
         # Konsens fürs nächste Jahr hebt auch den Gegenwarts-Deckel
         self.assertAlmostEqual(valuation.growth_rate({"rev_cagr": 0.10, "rev_growth": 0.02, "rev_growth_ny": 0.09}),
