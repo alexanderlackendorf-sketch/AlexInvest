@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .fmt import de
 from . import quality, valuation
 
 # (Kennzahl, höher_ist_besser)
@@ -451,13 +452,13 @@ def red_flags(row: dict) -> list[tuple[str, str]]:
     nd, f = _nan_none(row.get("net_debt_ebitda")), _nan_none(row.get("f_score"))
     if (z is not None and z < 1.1 and row.get("sector") not in NO_ALTMAN_SECTORS
             and (row.get("loss_making") or (nd is not None and nd > 4 and f is not None and f <= 4))):
-        out.append(("schieflage", f"Finanzielle Schieflage: Altman Z'' {z:.2f} (< 1,1) bei "
-                                  + ("Verlust" if row.get("loss_making") else f"Verschuldung {nd:.1f}x EBITDA und F-Score {f:.0f}")))
+        out.append(("schieflage", f"Finanzielle Schieflage: Altman Z'' {de(z, 2, pct=False)} (< 1,1) bei "
+                                  + ("Verlust" if row.get("loss_making") else f"Verschuldung {de(nd, 1, pct=False)}x EBITDA und F-Score {f:.0f}")))
     if m is not None and m > -1.78 and acc is not None and acc > 0.05:
-        out.append(("gewinnqualitaet", f"Gewinnqualität prüfen: Beneish M-Score {m:.2f} (> -1,78) und Accruals {acc:.0%} "
+        out.append(("gewinnqualitaet", f"Gewinnqualität prüfen: Beneish M-Score {de(m, 2, pct=False)} (> -1,78) und Accruals {de(acc, 0)} "
                                        "(bei starkem Wachstum oder Sondergewinnen oft Fehlalarm)"))
     elif acc is not None and acc > 0.10:
-        out.append(("gewinnqualitaet", f"Gewinnqualität prüfen: Gewinn liegt {acc:.0%} der Bilanzsumme über dem Cashflow"))
+        out.append(("gewinnqualitaet", f"Gewinnqualität prüfen: Gewinn liegt {de(acc, 0)} der Bilanzsumme über dem Cashflow"))
     return out
 
 
@@ -552,9 +553,8 @@ def watch_entry(row: dict, code: str) -> dict:
     out = {"buy_distance": None if dist is None else round(dist, 3), "on_buy_list": on_list, "watch_status": status}
     tgt, n = _nan_none(row.get("analyst_target")), row.get("analyst_count") or 0
     if tgt and price and n >= ANALYST_MIN_N and tgt < price and dist is not None and dist <= LIST_TOL:
-        de = f"{tgt:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        out["analyst_warn"] = (f"Ø Analystenziel {de} liegt unter dem Kurs ({tgt / price - 1:+.0%}, {n} Analysten) – "
-                               "Modell und Markt widersprechen sich; Grund klären").replace("%", " %")
+        out["analyst_warn"] = (f"Ø Analystenziel {de(tgt, 2, pct=False)} liegt unter dem Kurs ({de(tgt / price - 1, 0, sign=True)}, "
+                               f"{n} Analysten) – Modell und Markt widersprechen sich; Grund klären")
     return out
 
 
