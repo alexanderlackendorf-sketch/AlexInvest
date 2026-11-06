@@ -23,7 +23,7 @@ SECTORS = ["Technology", "Healthcare", "Financial Services", "Industrials", "Ene
 def fake_prices(seed, n=520, start=100.0, drift=0.0004):
     rng = np.random.default_rng(seed)
     close = start * np.exp(np.cumsum(rng.normal(drift, 0.015, n)))
-    idx = pd.bdate_range(end="2026-10-21", periods=n)
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)   # aktuell, sonst gilt der Kurs als veraltet
     hi = close * (1 + rng.uniform(0, 0.01, n))
     lo = close * (1 - rng.uniform(0, 0.01, n))
     return pd.DataFrame({"Open": close, "High": hi, "Low": lo, "Close": close, "Volume": 1e6}, index=idx)
@@ -178,23 +178,53 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(a["ampeln"]["Daten"], "gruen")
 
     def test_total_score(self):
-        sc, caps = scoring.total_score(8.0, 7.0, 6.0, 6.0, {"er": 0.10}, False)
-        self.assertAlmostEqual(sc, 7.1)                                        # 40/35/15/10
+        ok = {"er": 0.13, "hurdle": 0.11, "uncertainty": "mittel"}            # 2 Pp. über der Hürde
+        sc, caps = scoring.total_score(8.0, 7.0, 6.0, ok, False)
+        self.assertAlmostEqual(sc, 7.2)                                        # 50/35/15
         self.assertEqual(caps, [])
-        sc, caps = scoring.total_score(3.0, 10.0, 10.0, 10.0, {"er": 0.20}, False)
+        sc, caps = scoring.total_score(3.0, 10.0, 10.0, ok, False)
         self.assertEqual(sc, 4.0)
         self.assertIn("Qualität < 4", caps)
-        self.assertEqual(scoring.total_score(9.0, 10.0, 10.0, 10.0, {"er": 0.20}, True)[0], 4.0)   # Warnsignal
-        self.assertEqual(scoring.total_score(9.0, 9.0, 9.0, 9.0, {"er": 0.06}, False)[0], 6.0)     # Rendite < 8 %
-        self.assertEqual(scoring.total_score(9.0, None, 9.0, 9.0, {}, False)[0], 6.0)              # keine Bewertung
-        self.assertIsNone(scoring.total_score(None, 8.0, 5.0, 5.0, {}, False)[0])
+        self.assertEqual(scoring.total_score(9.0, 10.0, 10.0, ok, True)[0], 4.0)               # Warnsignal
+        self.assertEqual(scoring.total_score(9.0, None, 9.0, {}, False)[0], 5.0)               # keine Bewertung
+        self.assertIsNone(scoring.total_score(None, 8.0, 5.0, {}, False)[0])
+
+    def test_total_score_caps_relative_to_buy_price(self):
+        # Kaufrating: über dem Kaufkurs kein hohes Rating, egal wie gut das Unternehmen ist
+        def cap(ex, **kw):
+            return scoring.total_score(10.0, 10.0, 10.0, {"er": 0.11 + ex, "hurdle": 0.11, **kw}, False)[0]
+        self.assertEqual(cap(-0.01), 6.5)
+        self.assertEqual(cap(-0.04), 5.5)
+        self.assertEqual(cap(-0.07), 4.5)
+        self.assertEqual(cap(0.01), 10.0)
+        self.assertEqual(cap(0.01, uncertainty="sehr hoch"), 6.0)
+        top = {"er": 0.14, "hurdle": 0.11}
+        self.assertEqual(scoring.total_score(10.0, 10.0, 10.0, top, False, stable=False)[0], 6.9)       # Markt zweifelt
+        self.assertEqual(scoring.total_score(10.0, 10.0, 10.0, top, False, {"zyklik_spitzengewinn"})[0], 5.0)
+        self.assertEqual(scoring.total_score(9.0, 9.0, 9.0, top, {"gewinnqualitaet"})[0], 6.0)
+
+    def test_excess_and_timing_score(self):
+        self.assertEqual(scoring.excess_score({"er": 0.11, "hurdle": 0.11}), 6.5)            # genau am Kaufkurs
+        self.assertEqual(scoring.excess_score({"er": 0.07, "hurdle": 0.11}), 3.5)
+        self.assertEqual(scoring.excess_score({"er": 0.20, "hurdle": 0.11}), 10.0)
+        self.assertIsNone(scoring.excess_score({"er": None, "hurdle": 0.11}))
+        self.assertEqual(scoring.timing_score(9.0, 9.0), 9.0)
+        self.assertEqual(scoring.timing_score(9.0, 9.0, cyclical=True), 5.0)                  # Zyklushoch nicht belohnen
+        self.assertEqual(scoring.timing_score(None, 4.0), 4.0)
+        self.assertIsNone(scoring.timing_score(None, None))
+        self.assertTrue(scoring.is_stable(4.0, None))
+        self.assertTrue(scoring.is_stable(1.0, 7.0))
+        self.assertFalse(scoring.is_stable(1.0, 5.0))
+
+    def test_no_rating_without_data(self):
+        r = {"q_score": None, "valuation": {}, "flags": [], "coverage": 1.0, "price": 100.0, "score": 6.0}
+        self.assertIsNone(scoring.assess(r)["score"])
 
     def test_red_flags(self):
         self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 1.0}), [])   # Altman allein reicht nicht
         self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 5.0, "f_score": 3})[0][0], "schieflage")
         self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 5.0, "f_score": 7}), [])
         self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "loss_making": True, "sector": "Utilities"}), [])
-        self.assertEqual(scoring.total_score(9.0, 9.0, 9.0, 9.0, {"er": 0.2}, {"gewinnqualitaet"})[0], 6.0)
         self.assertEqual(scoring.red_flags({"beneish_m": -1.0, "accruals": 0.0}), [])         # Beneish allein reicht nicht
         self.assertTrue(scoring.red_flags({"beneish_m": -1.0, "accruals": 0.07}))
         self.assertTrue(scoring.red_flags({"accruals": 0.12}))

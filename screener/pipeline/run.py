@@ -281,12 +281,17 @@ def main(argv=None):
     hist = _load(state / "history.json", {})
     for s, v in df["score"].items():
         if v == v:
-            h = [x for x in hist.get(s, []) if x[0] != today] + [[today, float(v)]]
+            # Eintrag mit Modellversion: Veränderungen werden nur innerhalb eines Modells verglichen
+            h = [x for x in hist.get(s, []) if x[0] != today] + [[today, float(v), scoring.MODEL_VERSION]]
             hist[s] = h[-HISTORY_KEEP:]
     _save(state / "history.json", hist)
 
+    def same_model(s):
+        # Einträge ohne Versionsangabe stammen aus Modell <= 4
+        return [x for x in hist.get(s, []) if (x[2] if len(x) > 2 else 4) == scoring.MODEL_VERSION]
+
     def change(s, days):
-        h = hist.get(s, [])
+        h = same_model(s)
         cutoff = (now.date() - dt.timedelta(days=days)).isoformat()
         old = [x for x in h if x[0] <= cutoff]
         return h[-1][1] - old[-1][1] if (old and h) else None
@@ -301,6 +306,7 @@ def main(argv=None):
         pct_pillars = {n: d.pop(f"p_{n}") for n in scoring.PILLARS}
         # Anzeige-Säulen: Qualität und Bewertung absolut (Qualitäts-Score, Preis-Score), übrige als Perzentil-Info
         d["pillars"] = {"Bewertung": d.get("price_score"), "Qualität": d.get("q_score"),
+                        "Timing": d.get("timing_score"),
                         "Momentum": d.get("mom_score"), "Revisionen": d.get("rev_score"),
                         "Wachstum": (d.get("q_components") or {}).get("Wachstum"),
                         "Analysten": pct_pillars.get("Analysten")}
@@ -310,7 +316,7 @@ def main(argv=None):
         d["targets"] = None   # ersetzt durch d["valuation"] (fairer Wert, Kaufkurs, Szenarien)
         d["score_chg_1w"] = change(s, 7)
         d["score_chg_1m"] = change(s, 30)
-        d["spark"] = [x[1] for x in hist.get(s, [])[-60:]]
+        d["spark"] = [x[1] for x in same_model(s)[-60:]]
         d.pop("composite", None)
         out_rows.append(d)
 
@@ -336,7 +342,7 @@ def main(argv=None):
     meta = {
         "generated_at": now.isoformat(timespec="seconds"),
         "runtime_s": round(time.time() - t0),
-        "universe": len(symbols), "rated": int(df["score"].notna().sum()), "rows": len(out_rows),
+        "universe": len(symbols), "rated": sum(1 for r in out_rows if r.get("score") is not None), "rows": len(out_rows),
         "failed": failed, "warnings": warnings, "flag_counts": flag_counts, "sec_status": sec_status,
         "fx_to_eur": fx,
         "tracking": track_eval,

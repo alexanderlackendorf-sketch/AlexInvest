@@ -141,7 +141,7 @@ const COLS = [
   { k: "score", t: "Rating", r: (r) => scoreBadge(r.score) + delta(r.score_chg_1w) },
   { k: "price_score", t: "Bewertung", r: (r) => scoreBadge(r.price_score) },
   { k: "q_score", t: "Qualität", r: (r) => scoreBadge(r.q_score) },
-  { k: "mom_score", t: "Momentum", r: (r) => scoreBadge(r.mom_score) },
+  { k: "timing_score", t: "Timing", r: (r) => scoreBadge(r.timing_score) },
   { k: "verdict", t: "Urteil", l: true, v: (r) => VERDICT_RANK[r.verdict_code] ?? -1, r: verdictHtml },
   { k: "lenses", t: "3 Methoden", l: true, v: (r) => (r.methods_agree ? 10 : 0) + Object.values(r.lenses || {}).filter((x) => x.ampel === "gruen").length, r: lensRow },
   { k: "price", t: "Kurs", n: true, r: (r) => money(r.price, r.currency) },
@@ -465,24 +465,31 @@ function method() {
     <dl class="kv">${Object.entries(m.sources).map(([k, v]) => `<dt>${esc(k)}</dt><dd style="font-family:var(--sans)">${esc(v)}</dd>`).join("")}</dl>
     <h4>Devisenkurse (1 Einheit → EUR)</h4>
     <dl class="kv">${Object.entries(m.fx_to_eur).filter(([k]) => k !== "GBp").map(([k, v]) => `<dt>${esc(k)}</dt><dd>${F[2].format(v)}</dd>`).join("")}</dl>`;
-  $("#method-panel").innerHTML = `<h3>Methodik (Modell 4) · Ziel: gute Aktien zu einem interessanten Kaufkurs</h3>
+  $("#method-panel").innerHTML = `<h3>Methodik (Modell 5) · Ziel: gute Aktien zu einem interessanten Kaufkurs</h3>
     <p class="small">Das Modell verbindet die drei Ansätze professioneller Investoren: <b>Quant-Faktoren</b> (Value, Quality, Momentum: über Jahrzehnte belegt, u.a. Fama-French, Asness, Novy-Marx),
     <b>erwartete Rendite</b> (Frage eines Hedgefonds: „Was verdiene ich zu diesem Kurs?“) und <b>fairer Wert mit Sicherheitsmarge</b> (Morningstar-Logik).
     Grundlage sind geprüfte Jahresabschlüsse (SEC 10-K bzw. Yahoo), keine Analysten-Gewinnprognosen. Alle Skalen sind absolut, es gibt keine erzwungene Verteilung.</p>
-    <h4>1 · Rating 1–10</h4>
-    <p class="small"><b>40 % Bewertung + 35 % Qualität + 15 % Momentum + 10 % Gewinnrevisionen.</b> Danach harte Deckel, denn Schwächen lassen sich nicht durch einen billigen Kurs ausgleichen:
-    Qualität &lt; 5 → höchstens 5 (&lt; 4 → höchstens 4) · finanzielle Schieflage → höchstens 4 · Gewinnqualität prüfen → höchstens 6 · erwartete Rendite unter 8 % → höchstens 6 · keine belastbare Bewertung → höchstens 6.</p>
+    <h4>1 · Rating 1–10 = Kaufrating</h4>
+    <p class="small">Das Rating beantwortet eine Frage: <b>Wie attraktiv ist ein Kauf zum heutigen Kurs?</b> Wie gut das Unternehmen ist, zeigt die Qualitätsnote.
+    Ein hohes Rating setzt deshalb einen Kurs im Kaufbereich voraus. Lesart: <b>ab 7 genauer anschauen</b> (fast immer „Kandidat“) ·
+    6–6,9 beobachten (gut, aber Kurs knapp über Kaufkurs oder Markt zweifelt) · 4,5–5,9 neutral · darunter meiden.</p>
+    <p class="small"><b>50 % Bewertung + 35 % Qualität + 15 % Timing.</b> Danach harte Deckel, denn Schwächen lassen sich nicht durch einen billigen Kurs ausgleichen:
+    Kurs über Kaufkurs → höchstens 6,5 (Überrendite unter −3 Pp. → 5,5, unter −6 Pp. → 4,5) · Markt zweifelt (Momentum im unteren Drittel und keine steigenden Schätzungen) → höchstens 6,9 ·
+    Unsicherheit „sehr hoch“ → höchstens 6 · Qualität &lt; 5 → höchstens 5 (&lt; 4 → höchstens 4) · finanzielle Schieflage → höchstens 4 · Gewinnqualität prüfen → höchstens 6 ·
+    möglicher zyklischer Spitzengewinn ohne Mehrjahresdaten → höchstens 5 · keine belastbare Bewertung → höchstens 5 · Daten nicht ausreichend → kein Rating.</p>
     <ul class="small">
-      <li><b>Bewertung</b> = 60 % erwartete Rendite (2 % → 0 · 5 % → 2 · 8 % → 4 · 10 % → 5,5 · 12 % → 7 · 15 % → 8,5 · ≥ 20 % → 10)
-        + 20 % gegenüber der eigenen Bewertungshistorie (Owner-Earnings-Rendite heute ÷ Median 5 J.: 0,7 → 2 · 1,0 → 5 · ab 1,5 → 8,5; mehr zählt nicht, alte Hype-Bewertungen sind kein Maßstab)
-        + 20 % gegenüber der Vergleichsgruppe (Perzentil von Owner-Earnings-Rendite, FCF-Rendite und EV/EBITDA).</li>
-      <li><b>Momentum</b>: Kursentwicklung der letzten 12 Monate ohne den letzten Monat, Perzentil im Universum. Bremst „billige“ Aktien, die weiter fallen (Value-Falle).</li>
-      <li><b>Revisionen</b>: Änderung der Konsens-Gewinnschätzung über 90 Tage (−10 % → 0 · 0 → 5 · +10 % → 10) und Saldo aus Anhebungen und Senkungen über 30 Tage.</li>
+      <li><b>Bewertung</b> = 75 % <b>Überrendite</b>: erwartete Rendite minus Hürde der Aktie (−8 Pp. → 0,5 · −4 → 3,5 · −2 → 5 · 0 = Kaufkurs → 6,5 · +2 → 8 · +4 → 9 · ab +6 → 10).
+        Die Hürde steigt mit der Unsicherheit (10–13 %). So zählt bei einer riskanten Aktie dieselbe Rendite weniger als bei einer sicheren.
+        + 12,5 % gegenüber der eigenen Bewertungshistorie (Owner-Earnings-Rendite heute ÷ Median 5 J.: 0,7 → 2 · 1,0 → 5 · ab 1,5 → 8,5)
+        + 12,5 % gegenüber der Vergleichsgruppe (Perzentil von Owner-Earnings-Rendite, FCF-Rendite und EV/EBITDA).</li>
+      <li><b>Timing</b> = Mittel aus <b>Momentum</b> (Kursentwicklung 12 Monate ohne den letzten Monat, Perzentil im Universum) und <b>Gewinnrevisionen</b>
+        (Änderung der Konsens-Gewinnschätzung über 90 Tage: −10 % → 0 · 0 → 5 · +10 % → 10, und Saldo aus Anhebungen und Senkungen über 30 Tage).
+        Bei Zyklikern höchstens 5: Dort fallen steigende Kurse und Schätzungen oft mit dem Zyklushoch zusammen.</li>
     </ul>
     <h4>2 · Qualität 0–10</h4>
     <table class="metrics">${Object.entries(Q_COMP_INFO).map(([k, i]) => `<tr><td>${k}</td><td class="l small" style="white-space:normal">${esc(i.how)}</td></tr>`).join("")}</table>
     <p class="small">Gewichte: Rentabilität 25 %, Bruttoprofitabilität 10 %, Margen 10 %, Stabilität 15 %, Gewinnqualität 10 %, Bilanz 10 %, Wachstum 10 %, F-Score 10 % (fehlende Bausteine werden herausgerechnet).
-    Banken und Versicherer: ROE 45 %, Stabilität 30 %, Wachstum 25 %.
+    Banken und Versicherer: ROE 45 %, Stabilität 30 %, Wachstum 25 %, höchstens 8,5 (nur drei Bausteine, Bilanzrisiken von außen kaum prüfbar).
     Zu- und Abschläge: Verwässerung über 2 % bzw. 4 % p.a. (−0,7 / −1,5), Rückkäufe über 2 % (+0,3), Marge steigt bzw. fällt um mehr als 2 Pp. p.a. (+0,5 / −0,7), aktuell Verlust (−1).</p>
     <h4>3 · Erwartete Rendite (interner Zinsfuß)</h4>
     <ul class="small">
@@ -530,8 +537,8 @@ function method() {
       <li><b>Günstig, aber Markt zweifelt</b>: wie oben, aber Kurs schwach und keine steigenden Schätzungen. Rechnerisch billige Aktien, die weiter fallen, sind die häufigste Value-Falle. Erst die Stabilisierung abwarten.</li>
       <li><b>Mehrere Aktiengattungen</b> (z. B. FOX/FOXA): Kandidat ist nur die größte Gattung, die übrigen verweisen darauf.</li>
       <li><b>Nahe Kaufbereich</b>: Kurs höchstens 10 % über dem Kaufkurs. <b>Auf Kaufkurs warten</b>: darüber, der Kaufkurs steht dabei.</li>
-      <li><b>Solide Qualität</b> (5–7): günstig (Kurs ≤ Kaufkurs), fair (erwartete Rendite ≥ 8 %) oder zu teuer. <b>Schwache Qualität</b> (&lt; 5): meiden; bei niedrigem Kurs mit dem Hinweis „Value-Falle möglich“.</li>
-      <li>Chart (Trend, Buy-Zonen) und Analysten-Kursziele fließen <b>nicht</b> ins Rating ein. Sie dienen der Einordnung und dem Timing.</li>
+      <li><b>Solide Qualität</b> (5–7): günstig (Kurs ≤ Kaufkurs), fair (erwartete Rendite höchstens 3 Pp. unter der Hürde) oder zu teuer. <b>Schwache Qualität</b> (&lt; 5): meiden; bei niedrigem Kurs mit dem Hinweis „Value-Falle möglich“.</li>
+      <li>Chart (Trend, Buy-Zonen) und Analysten-Kursziele fließen <b>nicht</b> ins Rating ein. Sie dienen der Einordnung.</li>
     </ul>
     <h4>Daten und Grenzen</h4>
     <ul class="small">
@@ -564,7 +571,7 @@ function peerTable(r) {
   const cols = [r, ...peers];
   const rows = [
     ["Rating", (x) => scoreBadge(x.score)], ["Bewertung", (x) => scoreBadge(x.price_score)], ["Qualität", (x) => scoreBadge(x.q_score)],
-    ["Momentum", (x) => scoreBadge(x.mom_score)],
+    ["Timing", (x) => scoreBadge(x.timing_score)],
     ["Erwartete Rendite / Hürde", (x) => isNum(V(x, "er")) ? `${erCell(x)} <span class="small muted">/ ${pctPlain(V(x, "hurdle"), 0)}</span>` : dash],
     ["Kaufkurs", (x) => money(V(x, "buy_price"), x.currency)],
     ["Eingepreistes Wachstum", (x) => pctN(V(x, "implied_growth"), 0)],
@@ -685,9 +692,10 @@ function openDetail(sym) {
     </div>`;
   const vp = r.v_parts || {};
   const ratingHtml = `<table class="metrics">
-      ${[["Bewertung", r.price_score, "40 %"], ["Qualität", r.q_score, "35 %"], ["Momentum", r.mom_score, "15 %"], ["Revisionen", r.rev_score, "10 %"]]
+      ${[["Bewertung", r.price_score, "50 %"], ["Qualität", r.q_score, "35 %"], ["Timing", r.timing_score, "15 %"]]
         .map(([k, x, w]) => `<tr><td>${k} <span class="muted small">${w}</span></td><td class="n">${scoreBadge(x)}</td></tr>`).join("")}
-      <tr><td colspan="2" class="l small muted" style="white-space:normal">Bewertung = 60 % erwartete Rendite (${fmt(vp["Erwartete Rendite"])}) · 20 % vs. eigene Historie (${fmt(vp["vs. eigene Historie"])}) · 20 % vs. Vergleichsgruppe (${fmt(vp["vs. Vergleichsgruppe"])})</td></tr>
+      <tr><td colspan="2" class="l small muted" style="white-space:normal">Bewertung = 75 % Überrendite über der Hürde (${fmt(vp["Überrendite"])}) · 12,5 % vs. eigene Historie (${fmt(vp["vs. eigene Historie"])}) · 12,5 % vs. Vergleichsgruppe (${fmt(vp["vs. Vergleichsgruppe"])})<br>
+        Timing = Mittel aus Momentum (${fmt(r.mom_score)}) und Gewinnrevisionen (${fmt(r.rev_score)}), bei Zyklikern höchstens 5</td></tr>
     </table>${(r.score_caps || []).length ? `<div class="flag-list">Rating gedeckelt: ${esc(r.score_caps.join(", "))}</div>` : ""}`;
   const sc = v.scenarios || {};
   const decision = isNum(v.er) ? `
@@ -754,7 +762,7 @@ function openDetail(sym) {
           <div><span>Rating</span>${scoreBadge(r.score, true)}</div>
           <div><span>Bewertung</span>${scoreBadge(r.price_score)}</div>
           <div><span>Qualität</span>${scoreBadge(r.q_score)}</div>
-          <div><span>Momentum</span>${scoreBadge(r.mom_score)}</div>
+          <div><span>Timing</span>${scoreBadge(r.timing_score)}</div>
         </div>
         <div style="max-width:260px"><div>${verdictHtml(r)}</div>
           <div class="small muted">${ampelRow(r)} · Daten: ${esc((r.data_why || []).join(", "))}</div></div>
@@ -912,7 +920,7 @@ Ergänze gemäß meinen Präferenzen ein Scoring 1–10, Preisziele für 1, 2 un
 
 Orientierungswerte aus meinem Screener. Nicht als Quelle verwenden, alle Zahlen selbst aktuell verifizieren:
 - Referenzkurs ${f2(r.price, 2)} ${r.currency} (Yahoo, Kurszeitpunkt ${r.price_time || "unbekannt"}, Fundamentaldaten Stand ${r.fund_date})
-- Screener: Rating ${r.score ?? "n/a"} (Bewertung ${r.price_score ?? "n/a"}, Qualität ${r.q_score ?? "n/a"}, Momentum ${r.mom_score ?? "n/a"}, Revisionen ${r.rev_score ?? "n/a"}) · Urteil: ${r.verdict}
+- Screener: Kaufrating ${r.score ?? "n/a"} (Bewertung ${r.price_score ?? "n/a"}, Qualität ${r.q_score ?? "n/a"}, Timing ${r.timing_score ?? "n/a"} aus Momentum ${r.mom_score ?? "n/a"} und Revisionen ${r.rev_score ?? "n/a"}) · Urteil: ${r.verdict}
 - Erwartete Rendite ${p1(V(r, "er"))} p.a. (Hürde ${p1(V(r, "hurdle"))}), Kaufkurs ${isNum(V(r, "buy_price")) ? "≤ " + V(r, "buy_price").toFixed(2) + " " + r.currency : "n/a"}, eingepreistes Wachstum ${p1(V(r, "implied_growth"))} vs. geliefert ${p1(V(r, "growth_hist"))}, fairer Wert ${isNum(V(r, "fair_value")) ? V(r, "fair_value").toFixed(2) : "n/a"} (Unsicherheit ${V(r, "uncertainty") || "n/a"})
 - Drei Methoden: ${LENS_KEYS.map(([k, t]) => `${t} ${AMPEL[((r.lenses || {})[k] || {}).ampel || "grau"]}`).join(", ")} · F-Score ${r.f_score ?? "n/a"}, Altman Z'' ${f2(r.altman_z2, 2)}, Beneish ${f2(r.beneish_m, 2)}, Accruals ${p1(r.accruals)}
 - Ampeln: Qualität ${AMPEL[a["Qualität"] || "grau"]}, Bewertung ${AMPEL[a["Bewertung"] || "grau"]}, Wachstum ${AMPEL[a["Wachstum"] || "grau"]}, Daten ${AMPEL[a["Daten"] || "grau"]}, Einstieg ${AMPEL[a["Einstieg"] || "grau"]}
