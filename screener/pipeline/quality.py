@@ -114,6 +114,9 @@ def adjustments(r: dict) -> list[tuple[str, float]]:
             adj.append(("Marge steigt > 2 Pp. p.a.", +0.5))
         elif tr < -0.02:
             adj.append(("Marge fällt > 2 Pp. p.a.", -0.7))
+    om, om5 = _v(r.get("op_margin")), _v(r.get("op_margin_avg5"))
+    if not r.get("is_financial") and om is not None and om5 and om5 > 0 and om < 0.8 * om5:
+        adj.append(("Marge eingebrochen (> 20 % unter 5J-Schnitt)", -1.0))
     if r.get("loss_making"):
         adj.append(("aktuell Verlust", -1.0))
     if r.get("cyclical_evidenced"):

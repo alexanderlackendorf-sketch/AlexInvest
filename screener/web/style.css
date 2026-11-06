@@ -156,6 +156,7 @@ tbody tr:hover td.sticky { background: var(--surface-2); }
 .tag { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--line); margin-right: 3px; }
 .tag.zone { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
 .tag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.warn-txt { color: var(--warn); }
 
 /* Score badge: einfarbige Sequenz (blau = besser); sehr schwache Werte rot hinterlegt */
 .score {

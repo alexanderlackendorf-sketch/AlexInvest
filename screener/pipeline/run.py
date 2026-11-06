@@ -345,6 +345,8 @@ def main(argv=None):
         "universe": len(symbols), "rated": sum(1 for r in out_rows if r.get("score") is not None), "rows": len(out_rows),
         "failed": failed, "warnings": warnings, "flag_counts": flag_counts, "sec_status": sec_status,
         "fx_to_eur": fx,
+        "min_return": valuation.MIN_RETURN,
+        "buy_list": sum(1 for r in out_rows if r.get("on_buy_list")),
         "tracking": track_eval,
         "watchlist": digest.load_watchlist(),
         "repo": os.environ.get("GITHUB_REPOSITORY", "alexanderlackendorf-sketch/AlexInvest"),

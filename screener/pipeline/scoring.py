@@ -5,7 +5,7 @@ Leitfrage des Ratings: "Wie attraktiv ist ein Kauf zum heutigen Kurs?" – nicht
 
 Rating = 50 % Bewertung + 35 % Qualität + 15 % Timing, danach harte Deckel:
   Bewertung (0-10)  75 % Überrendite = erwartete Rendite (IRR zum heutigen Kurs) minus Hürde der Aktie
-                    (Hürde = Eigenkapitalkosten nach Unsicherheit + 2 Pp.), 12,5 % gegenüber der eigenen
+                    (Hürde = max(Mindestrendite 10 %, Eigenkapitalkosten nach Unsicherheit)), 12,5 % gegenüber der eigenen
                     Bewertungshistorie, 12,5 % gegenüber der Vergleichsgruppe (Owner-Earnings-, FCF-Rendite, EV/EBITDA)
   Qualität (0-10)   absolute Skala (quality.py); Banken/Versicherer höchstens 8,5 (Bilanzrisiken von außen kaum prüfbar)
   Timing (0-10)     Mittel aus Momentum (12-1 Monate, Perzentil) und Gewinnrevisionen (90 Tage, Saldo 30 Tage);
@@ -305,6 +305,7 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
     Q, V, warn = {}, {}, {}
     for s in df.index:
         row = df.loc[s].to_dict()
+        row["symbol"] = s
         row["flags"] = list(row.get("flags") or []) + extra_flags[s]
         row["cyclical_evidenced"] = cyc_ev.get(s, False)
         mp = margin_pct.get(s)
@@ -491,7 +492,11 @@ def total_score(q, p, t, v: dict, warn, flags=(), stable: bool = True) -> tuple[
                            (ex is not None and ex < -0.06, 4.5, "Kurs weit über Kaufkurs (Überrendite < −6 Pp.)"),
                            (ex is not None and ex < -0.03, 5.5, "Kurs deutlich über Kaufkurs (Überrendite < −3 Pp.)"),
                            (ex is not None and ex < 0, 6.5, "Kurs über Kaufkurs"),
-                           (not stable, 6.9, "Markt zweifelt (Kurs schwach, keine steigenden Schätzungen)")):
+                           (not stable, 6.9, "Markt zweifelt (Kurs schwach, keine steigenden Schätzungen)"),
+                           ((_nan_none(v.get("upside")) or 0) > 0.6, 6.5,
+                            "Rechenwert > 60 % über Kurs – Markt sieht ein Risiko, das das Modell nicht sieht"),
+                           (str(v.get("cf0_src") or "").startswith("FCF letzte 12 Monate"), 6.5,
+                            "Ertragskraft ohne Mehrjahresdaten")):
         if cond and s > lim:
             s = lim
             caps.append(why)
@@ -523,6 +528,33 @@ MOM_STABLE = 10 / 3   # Momentum-Score (Perzentil × 10) nicht im unteren Dritte
 REV_STABLE = 6.0      # Revisions-Score: Schätzungen werden angehoben
 KAUF_EXIT_TOL = 1.05   # Hysterese: Kandidat bleibt, solange der Kurs max. 5 % über dem Kaufkurs liegt
 NEAR_TOL = 1.10        # "nahe Kaufbereich": Kurs höchstens 10 % über dem Kaufkurs
+LIST_TOL = 0.15        # Kaufliste: gute Unternehmen bis 15 % über dem Kaufkurs
+ANALYST_MIN_N = 5      # Analystenhinweis erst ab 5 Analysten (Kursziel = Vergleich, nicht Teil der Note)
+
+
+def watch_entry(row: dict, code: str) -> dict:
+    """Kaufliste: Abstand zum Kaufkurs und Status. Keine Note, sondern eine Reihenfolge zum Abarbeiten."""
+    v = row.get("valuation") or {}
+    q, price, buy = _nan_none(row.get("q_score")), _nan_none(row.get("price")), _nan_none(v.get("buy_price"))
+    dist = (price / buy - 1) if (price and buy and buy > 0) else None
+    on_list = bool(q is not None and q >= Q_GOOD and dist is not None and dist <= LIST_TOL
+                   and v.get("uncertainty") != "sehr hoch" and code != "nab")
+    if not on_list:
+        status = None
+    elif code == "kandidat":
+        status = "Im Kaufbereich"
+    elif dist <= 0:
+        status = "Im Kaufbereich – erst prüfen"
+    elif dist <= NEAR_TOL - 1:
+        status = "Nahe Kaufkurs"
+    else:
+        status = "Bis 15 % über Kaufkurs"
+    out = {"buy_distance": None if dist is None else round(dist, 3), "on_buy_list": on_list, "watch_status": status}
+    tgt, n = _nan_none(row.get("analyst_target")), row.get("analyst_count") or 0
+    if tgt and price and n >= ANALYST_MIN_N and tgt < price and dist is not None and dist <= LIST_TOL:
+        out["analyst_warn"] = (f"Ø Analystenziel {tgt:,.2f} liegt unter dem Kurs ({tgt / price - 1:+.0%}, {n} Analysten) – "
+                               "Modell und Markt widersprechen sich; Grund klären").replace(",", "X").replace(".", ",").replace("X", ".")
+    return out
 
 
 def assess(row: dict, prev_code: str | None = None) -> dict:
@@ -583,6 +615,9 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
             code, text = "meiden", "Schwache Qualität, niedrig bewertet – Value-Falle möglich"
         else:
             code, text = "meiden_schwach", "Meiden – schwache Qualität"
+    blocking = [c for c in (row.get("score_caps") or []) if c.startswith(("Rechenwert > 60", "Ertragskraft ohne"))]
+    if code == "kandidat" and blocking:
+        code, text = "beobachten", "Gutes Unternehmen im Kaufbereich – aber " + blocking[0] + ": erst Einzelanalyse"
     if row.get("methods_agree") and code == "kandidat":
         text += " · alle drei Methoden einig"
     if code in ("kandidat", "beobachten") and a["Einstieg"] == "gruen" and row.get("in_buy_zone"):
@@ -590,7 +625,11 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
     if "zahlen_in_kuerze" in flags and code != "nab":
         d = int(row.get("earnings_in_days") or 0)
         text += " · Zahlen " + ("heute" if d == 0 else "morgen" if d == 1 else f"in {d} Tagen")
+    events = v.get("events") or []
+    if events and code != "nab":
+        text += " · bekanntes Ereignis: " + ", ".join(f"{e['ereignis']} {e['jahr']}" for e in events)
     out = {"ampeln": a, "data_why": dq_why, "verdict_code": code, "verdict": text}
+    out.update(watch_entry(row, code))
     if code == "nab":
         out["score"] = None   # Daten nicht ausreichend: kein Rating (sonst würde eine Zahl Sicherheit vortäuschen)
     return out

@@ -19,7 +19,7 @@ import pandas as pd
 from . import fetch
 
 log = logging.getLogger(__name__)
-HIST_VERSION = 3  # 2: Abschreibungen, 3: Bilanzposten für Piotroski/Altman/Beneish
+HIST_VERSION = 4  # 2: Abschreibungen, 3: Bilanzposten für Piotroski/Altman/Beneish, 4: Minderheiten + Leasing
 MAX_YEARS = 10
 
 # --- SEC: Konzepte je Größe (erstes vorhandenes gewinnt, Umsatz: größter Wert je Stichtag) ---
@@ -28,6 +28,7 @@ SEC_DURATION = {
                  "RevenueFromContractWithCustomerIncludingAssessedTax"], "USD", "max"),
     "op_income": (["OperatingIncomeLoss"], "USD", "first"),
     "net_income": (["NetIncomeLoss", "ProfitLoss"], "USD", "first"),
+    "ni_total": (["ProfitLoss"], "USD", "first"),   # inkl. Minderheiten -> Anteil der Aktionäre am Cashflow
     "eps": (["EarningsPerShareDiluted"], "USD/shares", "first"),
     "shares": (["WeightedAverageNumberOfDilutedSharesOutstanding"], "shares", "first"),
     "ocf": (["NetCashProvidedByUsedInOperatingActivities",
@@ -188,7 +189,11 @@ def extract_sec(facts: dict) -> list[dict]:
 Y_ROWS = {
     "revenue": ("is", ["Total Revenue", "Operating Revenue"]),
     "op_income": ("is", ["Operating Income", "Total Operating Income As Reported"]),
-    "net_income": ("is", ["Net Income", "Net Income Common Stockholders"]),
+    "net_income": ("is", ["Net Income Common Stockholders", "Net Income"]),
+    "ni_total": ("is", ["Net Income Including Noncontrolling Interests"]),
+    # IFRS 16: Leasingtilgung steht im Finanzierungs-Cashflow, nicht im operativen Cashflow (anders als
+    # US-GAAP-Operating-Leases). Näherung für die jährliche Tilgung: kurzfristige Leasingverbindlichkeit [SCHÄTZUNG]
+    "lease_cur": ("bs", ["Current Capital Lease Obligation"]),
     "eps": ("is", ["Diluted EPS"]),
     "shares": ("is", ["Diluted Average Shares"]),
     "pretax": ("is", ["Pretax Income"]),
@@ -260,6 +265,10 @@ def refresh_yahoo(universe: list[dict], cache: dict, max_checks: int = 200) -> d
 
 
 # --- Kennzahlen aus der Historie ---
+def _clip(x, lo, hi):
+    return max(lo, min(hi, x))
+
+
 def _cagr(a, b, k):
     if a is None or b is None or a <= 0 or b <= 0 or k <= 0:
         return None
@@ -302,9 +311,19 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
     margins, fcf_m, roics, fcfs, nis, sbc_r = [], [], [], [], [], []
     neg_ic_profit = False
     ocfs5, nis5, roes, own_m, roics_x = [], [], [], [], []
+    att_last, lease_used = None, False
     for y in ys:
         rev, op, ni = g(y, "revenue"), g(y, "op_income"), g(y, "net_income")
-        fcf = g(y, "ocf") - g(y, "capex") if g(y, "ocf") is not None and g(y, "capex") is not None else None
+        # Anteil der eigenen Aktionäre: Der Cashflow ist konsolidiert (z. B. Telekom inkl. 100 % T-Mobile US),
+        # der Aktionär besitzt nur seinen Anteil -> Cashflows mit Gewinn-Anteil (ohne Minderheiten) gewichten
+        nt = g(y, "ni_total")
+        att = _clip(ni / nt, 0.2, 1.0) if (ni is not None and nt and ni > 0 and nt > 0) else 1.0
+        lease = g(y, "lease_cur") or 0.0   # nur bei Yahoo/IFRS vorhanden; SEC-Leasing steckt schon im OCF
+        lease_used = lease_used or lease > 0
+        if y is ys[-1]:
+            att_last = att
+        ocf_a = (g(y, "ocf") - lease) * att if g(y, "ocf") is not None else None
+        fcf = ocf_a - g(y, "capex") * att if ocf_a is not None and g(y, "capex") is not None else None
         tax_rate = None
         if g(y, "tax") is not None and g(y, "pretax") and g(y, "pretax") > 0:
             tax_rate = min(max(g(y, "tax") / g(y, "pretax"), 0.0), 0.4)
@@ -330,7 +349,7 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
         own = None
         if g(y, "ocf") is not None and g(y, "capex") is not None:
             maint = min(g(y, "capex"), g(y, "da")) if g(y, "da") is not None else g(y, "capex")
-            own = g(y, "ocf") - maint
+            own = ocf_a - maint * att
         eq = g(y, "equity")
         roe = ni / eq if (ni is not None and eq and eq > 0) else None
         if roe is not None and not -1 < roe < 1.5:
@@ -349,9 +368,9 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
                 fcfs.append(fcf)
                 nis.append(ni)
             if g(y, "sbc") is not None and rev and rev > 0:
-                sbc_r.append(g(y, "sbc") / rev)
-            if g(y, "ocf") is not None and ni is not None:
-                ocfs5.append(g(y, "ocf"))
+                sbc_r.append(g(y, "sbc") * att / rev)
+            if ocf_a is not None and ni is not None:
+                ocfs5.append(ocf_a)
                 nis5.append(ni)
             if roe is not None:
                 roes.append(roe)
@@ -399,7 +418,9 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
     sh_last = g(ys[-1], "shares")
     out["rev_ps_last"] = last["revenue"] / sh_last if last["revenue"] and sh_last else None
     out["owner_ps_last"] = last["owner_fcf"] / sh_last if last["owner_fcf"] is not None and sh_last else None
-    out["sbc_ps_last"] = g(ys[-1], "sbc") / sh_last if g(ys[-1], "sbc") is not None and sh_last else None
+    out["sbc_ps_last"] = g(ys[-1], "sbc") * att_last / sh_last if g(ys[-1], "sbc") is not None and sh_last else None
+    out["minority_share"] = round(1 - att_last, 3) if att_last is not None and att_last < 0.98 else None
+    out["lease_deducted"] = lease_used
     # Nachgewiesene Zyklik: stärkster Umsatzrückgang gegenüber Vorjahr in der verfügbaren Historie (bis 10 J.)
     revs = [g(y, "revenue") for y in ys]
     chg = [b / a - 1 for a, b in zip(revs, revs[1:]) if a and b and a > 0]
@@ -432,7 +453,9 @@ def derive(years: list[dict], close: pd.Series | None = None, same_currency: boo
         for y, row in zip(ys, table):
             p, sh = _price_at(close, y["fy_end"]), g(y, "shares")
             if p and sh and row["owner_fcf"] is not None:
-                oys.append((row["owner_fcf"] - (g(y, "sbc") or 0.0)) / sh / p)
+                nt, ni_ = g(y, "ni_total"), g(y, "net_income")
+                att = _clip(ni_ / nt, 0.2, 1.0) if (ni_ is not None and nt and ni_ > 0 and nt > 0) else 1.0
+                oys.append((row["owner_fcf"] - (g(y, "sbc") or 0.0) * att) / sh / p)
     out["owner_yield_hist_med"] = st.median(oys) if len(oys) >= 3 else None
     out["owner_yield_hist_n"] = len(oys)
     out.update(forensics(ys))

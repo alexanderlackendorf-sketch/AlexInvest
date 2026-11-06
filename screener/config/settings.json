@@ -1,0 +1,4 @@
+{
+  "_hinweis": "Persönliche Einstellungen des Screeners. mindestrendite: Rendite p. a., die eine Aktie zum heutigen Kurs mindestens erwarten lassen muss, damit sie im Kaufbereich liegt. Bei hoher Unsicherheit gilt der höhere Wert aus Mindestrendite und Eigenkapitalkosten (sehr hoch: 11 %).",
+  "mindestrendite": 0.10
+}

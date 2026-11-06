@@ -1,0 +1,14 @@
+{
+  "_hinweis": "Bekannte Ereignisse, die in den Zahlen noch nicht sichtbar sind (Patentabläufe, Regulierung, Klagen). Jeder Eintrag braucht eine Quelle. Wirkung: Ab dem Jahr 'jahr' fällt der Anteil 'umsatzanteil' des Geschäfts um 'erosion' (je zur Hälfte im Jahr des Ereignisses und im Folgejahr) – dauerhaft. Zusätzlich steigt die Unsicherheit um eine Stufe. erosion ist eine [SCHÄTZUNG]: typischer Umsatzverlust nach Patentablauf ~80 % bei klassischen Wirkstoffen, ~50 % bei Biologika. 'geprueft' = Datum der letzten Prüfung; Einträge älter als 12 Monate gelten als veraltet und werden ignoriert.",
+  "ereignisse": [
+    {"symbol": "INCY", "ereignis": "Patentablauf Jakafi (USA)", "jahr": 2028, "umsatzanteil": 0.66, "erosion": 0.8,
+     "quelle": "Reuters via Yahoo Finance, 10.02.2026: Jakafi-Prognose 2026 3,22–3,27 Mrd. $ bei Gesamtumsatz 4,77–4,94 Mrd. $; Patentablauf 2028",
+     "url": "https://finance.yahoo.com/news/incyte-weak-2026-revenue-forecast-131538277.html", "geprueft": "2026-11-06"},
+    {"symbol": "BMY", "ereignis": "Exklusivitätsverlust Eliquis und Opdivo (USA)", "jahr": 2028, "umsatzanteil": 0.51, "erosion": 0.65,
+     "quelle": "Panabee, 11.02.2026: Eliquis und Opdivo 2025 zusammen 24,5 Mrd. $ (~51 % des Umsatzes), Exklusivitätsverlust 2028; erosion gemischt aus Wirkstoff (Eliquis) und Biologikum (Opdivo)",
+     "url": "https://www.panabee.com/news/bristol-myers-squibb-earnings-2025-annual", "geprueft": "2026-11-06"},
+    {"symbol": "MRK", "ereignis": "Patentablauf Keytruda (Compound-Patent Dez. 2028)", "jahr": 2029, "umsatzanteil": 0.47, "erosion": 0.5,
+     "quelle": "Fintool: Keytruda 2025 über 30 Mrd. $ (~47 % des Umsatzes), Compound-Patent läuft Dezember 2028 aus; subkutane Form kann Erosion dämpfen",
+     "url": "https://fintool.com/news/merck-restructures-keytruda-cliff", "geprueft": "2026-11-06"}
+  ]
+}

@@ -220,6 +220,24 @@ class RulesTest(unittest.TestCase):
         r = {"q_score": None, "valuation": {}, "flags": [], "coverage": 1.0, "price": 100.0, "score": 6.0}
         self.assertIsNone(scoring.assess(r)["score"])
 
+    def test_buy_list_and_analyst_warning(self):
+        a = self._row(8.0, 0.12, mom=6.0)
+        self.assertTrue(a["on_buy_list"]); self.assertEqual(a["watch_status"], "Im Kaufbereich")
+        b = self._row(8.0, 0.09, buy=90.0)                       # 11 % über Kaufkurs
+        self.assertTrue(b["on_buy_list"]); self.assertEqual(b["watch_status"], "Bis 15 % über Kaufkurs")
+        self.assertAlmostEqual(b["buy_distance"], 100 / 90 - 1, places=3)
+        self.assertEqual(self._row(8.0, 0.09, buy=95.0)["watch_status"], "Nahe Kaufkurs")
+        self.assertFalse(self._row(8.0, 0.08, buy=80.0)["on_buy_list"])     # 25 % darüber
+        self.assertFalse(self._row(6.0, 0.12)["on_buy_list"])               # Qualität zu niedrig
+        self.assertFalse(self._row(8.0, 0.12, unc="sehr hoch")["on_buy_list"])
+        self.assertEqual(self._row(8.0, 0.12, mom=1.0, rev=3.0)["watch_status"], "Im Kaufbereich – erst prüfen")
+        r = {"q_score": 8.0, "price": 100.0, "analyst_target": 92.0, "analyst_count": 12,
+             "valuation": {"buy_price": 105.0, "uncertainty": "mittel"}}
+        w = scoring.watch_entry(r, "kandidat")
+        self.assertIn("unter dem Kurs", w["analyst_warn"])
+        self.assertNotIn("analyst_warn", scoring.watch_entry(dict(r, analyst_count=3), "kandidat"))
+        self.assertNotIn("analyst_warn", scoring.watch_entry(dict(r, analyst_target=120.0), "kandidat"))
+
     def test_red_flags(self):
         self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 1.0}), [])   # Altman allein reicht nicht
         self.assertEqual(scoring.red_flags({"altman_z2": 0.5, "net_debt_ebitda": 5.0, "f_score": 3})[0][0], "schieflage")
@@ -325,7 +343,7 @@ class ValuationModelTest(unittest.TestCase):
         self.assertAlmostEqual(v["methods"][1]["value"], 6.0 / 0.05)
         self.assertEqual(v["uncertainty"], "gering")
         self.assertAlmostEqual(v["coe"], 0.08)
-        self.assertAlmostEqual(v["hurdle"], 0.10)                                   # 8 % + 2 Pp.
+        self.assertAlmostEqual(v["hurdle"], 0.10)                                   # Mindestrendite 10 % > EK-Kosten 8 %
         self.assertAlmostEqual(v["buy_price"], valuation.value(6.0, 0.08, 0.25, 0.10, cap=15), places=1)
         self.assertAlmostEqual(valuation.irr(v["buy_price"], 6.0, 0.08, 0.25, 15), 0.10, places=3)
         self.assertAlmostEqual(v["hist_ratio"], 0.06 / 0.05)
@@ -383,6 +401,44 @@ class ValuationModelTest(unittest.TestCase):
         # Historie: Owner-Earnings-Rendite 2 % hieße 50x – begrenzt auf das 1,5-Fache von heute (10 % -> 6,7 %)
         self.assertAlmostEqual(v["methods"][1]["value"], 6.0 / (0.10 / 1.5), places=1)
         self.assertAlmostEqual(v["hist_score"], valuation.scale(1.5, valuation.HIST_PTS), places=1)
+
+    def test_min_return_hurdle(self):
+        self.assertAlmostEqual(valuation.MIN_RETURN, 0.10)   # config/settings.json
+        self.assertAlmostEqual(valuation.hurdle_for(0.08), 0.10)
+        self.assertAlmostEqual(valuation.hurdle_for(0.11), 0.11)   # sehr hohe Unsicherheit: EK-Kosten höher
+        with mock.patch.object(valuation, "MIN_RETURN", 0.12):
+            self.assertAlmostEqual(valuation.hurdle_for(0.08), 0.12)
+
+    def test_known_event_shock(self):
+        today = dt.date(2026, 11, 6)
+        ev = [{"symbol": "X", "ereignis": "Patentablauf", "jahr": 2028, "umsatzanteil": 0.5, "erosion": 0.8,
+               "quelle": "Test", "geprueft": "2026-11-01"}]
+        sh = valuation.event_shock(ev, today)
+        self.assertEqual([t for t, _ in sh], [2, 3])
+        self.assertAlmostEqual(sh[0][1] * sh[1][1], 0.6)          # dauerhaft 1 − 0,5 × 0,8
+        base = valuation.value(6.0, 0.05, 0.25, 0.10, cap=15)
+        hit = valuation.value(6.0, 0.05, 0.25, 0.10, cap=15, shock=sh)
+        self.assertLess(hit, base * 0.75)
+        self.assertGreater(hit, base * 0.55)
+        self.assertAlmostEqual(valuation.irr(hit, 6.0, 0.05, 0.25, 15, None, sh), 0.10, places=3)
+        with mock.patch.object(valuation, "EVENTS", {"X": ev}):
+            v0 = valuation.fair_value(self._company(), 8.0)
+            v1 = valuation.fair_value(self._company(symbol="X"), 8.0)
+        self.assertLess(v1["er"], v0["er"])
+        self.assertLess(v1["buy_price"], v0["buy_price"])
+        self.assertTrue(any("Bekanntes Ereignis" in t for t in v1["uncertainty_why"]))
+        self.assertEqual(v1["events"][0]["ereignis"], "Patentablauf")
+        # veraltete oder unvollständige Einträge werden ignoriert
+        old = dict(ev[0], geprueft="2024-01-01")
+        with mock.patch.object(valuation, "_load_json", return_value={"ereignisse": [old, {"symbol": "Y"}]}):
+            self.assertEqual(valuation.load_events(today), {})
+        self.assertIn("INCY", valuation.load_events(today))       # mitgelieferte Liste ist gültig
+
+    def test_minority_in_cash_flow(self):
+        r = self._company(fcf_margin=0.15, fcf_margin_avg5=0.02, minority_share=0.4)
+        cf, txt = valuation.base_cash_flow(r, False)
+        self.assertIn("ohne Minderheiten", txt)
+        self.assertIn("Investitionsboom", txt)   # TTM-FCF wird auf den eigenen Anteil gekürzt
 
     def test_fair_value_bank(self):
         r = {"price": 50.0, "is_financial": True, "roe_med5": 0.15, "pb": 1.0, "rev_cagr": 0.05, "rev_growth": 0.05,
@@ -535,6 +591,25 @@ class HistoryTest(unittest.TestCase):
         # ROIC letztes Jahr: 20*1.1^6 * (1-0.2) / (80+30-10)
         self.assertAlmostEqual(h["roic_last"], 20 * 1.1 ** 6 * 0.8 / 100, places=6)
         self.assertEqual(len(h["hist_table"]), 7)
+
+    def test_minorities_and_lease(self):
+        ys = self._years()
+        for y in ys:
+            y["ni_total"] = y["net_income"] / 0.6     # 40 % gehören Minderheiten
+        h0, h1 = history.derive(self._years()), history.derive(ys)
+        self.assertAlmostEqual(h1["minority_share"], 0.4, places=3)
+        self.assertIsNone(h0["minority_share"])
+        self.assertAlmostEqual(h1["owner_margin_med5"], h0["owner_margin_med5"] * 0.6, places=6)
+        self.assertAlmostEqual(h1["sbc_ps_last"], h0["sbc_ps_last"] * 0.6, places=6)
+        ys2 = self._years()
+        for y in ys2:
+            y["lease_cur"] = 2.0
+        h2 = history.derive(ys2)
+        self.assertTrue(h2["lease_deducted"])
+        self.assertFalse(h0["lease_deducted"])
+        last = h2["hist_table"][-1]
+        self.assertAlmostEqual(last["fcf"], h0["hist_table"][-1]["fcf"] - 2.0, places=6)
+        self.assertAlmostEqual(last["owner_fcf"], h0["hist_table"][-1]["owner_fcf"] - 2.0, places=6)
 
     def test_margin_normalized_eps(self):
         h = history.derive(self._years())
