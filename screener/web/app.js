@@ -178,10 +178,11 @@ function dataCell(r) {
 /* ---------- Presets ---------- */
 const PRESETS = [
   { id: "kaufliste", label: "★ Kaufliste (Q ≥ 7, ≤ 15 % über Kaufkurs)", f: (r) => !!r.on_buy_list },
+  { id: "pruefen", label: "Günstig, erst prüfen", f: (r) => !!r.on_buy_list && buyGroup(r) === "pruefen" },
   { id: "einig", label: "Alle drei Methoden einig", f: (r) => !!r.methods_agree },
   { id: "kandidat", label: "Gute Aktien im Kaufbereich", f: (r) => r.verdict_code === "kandidat" },
   { id: "zweifel", label: "Günstig, aber Markt zweifelt", f: (r) => r.verdict_code === "beobachten" && /Markt zweifelt/.test(r.verdict || "") },
-  { id: "nahe", label: "Gute Aktien ≤ 10 % über Kaufkurs", f: (r) => r.q_score >= 7 && isNum(toBuyPrice(r)) && toBuyPrice(r) > 0 && toBuyPrice(r) <= 0.10 },
+  { id: "nahe", label: "Nahe Kaufkurs (≤ 15 % darüber)", f: (r) => !!r.on_buy_list && buyGroup(r) === "nahe" },
   { id: "top", label: "Top-Qualität (≥ 8,5)", f: (r) => r.q_score >= 8.5 },
   { id: "guenstig", label: "Solide & günstig (Q ≥ 5, erw. Rendite ≥ Hürde)", f: (r) => r.q_score >= 5 && V(r, "er") >= V(r, "hurdle") && V(r, "uncertainty") !== "sehr hoch" },
   { id: "analysten", label: "Widerspruch: Analystenziel unter Kurs", f: (r) => !!r.analyst_warn },
@@ -243,47 +244,79 @@ function health() {
 function kpis() {
   const m = DATA.meta;
   const rated = ROWS.filter((r) => isNum(r.score));
-  const cnt = (c) => ROWS.filter((r) => r.verdict_code === c).length;
-  const near = ROWS.filter((r) => r.q_score >= 7 && isNum(toBuyPrice(r)) && toBuyPrice(r) > 0 && toBuyPrice(r) <= 0.10).length;
+  const grp = (g) => ROWS.filter((r) => r.on_buy_list && buyGroup(r) === g).length;
   const sec = m.sec_status || {};
   const secOk = (sec.bestaetigt || 0) + (sec.bestaetigt_split || 0), secAll = Object.values(sec).reduce((a, b) => a + b, 0);
-  $("#kpis").innerHTML = [
-    ["Universum", m.universe, `${m.rows} mit Daten · ${rated.length} mit Rating`],
-    ["Methoden einig", ROWS.filter((r) => r.methods_agree).length, "Quant, Rendite und fairer Wert grün", "einig"],
-    ["Kaufliste", ROWS.filter((r) => r.on_buy_list).length, "Q ≥ 7, ≤ 15 % über Kaufkurs", "kaufliste"],
-    ["Im Kaufbereich", cnt("kandidat"), `Qualität ≥ 7, Rendite ≥ Hürde (mind. ${pctPlain(m.min_return ?? 0.10, 0)}), stabil`, "kandidat"],
-    ["Nahe Kaufbereich", near, "Qualität ≥ 7, ≤ 10 % über Kaufkurs", "nahe"],
-    ["Gut, aber zu teuer", cnt("beobachten_teuer"), "Kaufkurs merken", "teuer"],
-    ["SEC-geprüft", secAll ? `${secOk}/${secAll}` : "–", "US-Gewinn & EPS bestätigt"],
-  ].map(([t, v, s, p]) => `<div class="kpi" ${p ? `data-preset="${p}"` : ""}><span>${t}</span><b>${v}</b><small>${s}</small></div>`).join("");
-  document.querySelectorAll(".kpi[data-preset]").forEach((k) => k.onclick = () => setPreset(k.dataset.preset));
+  const main = [
+    ["Kandidaten", grp("kandidat"), "gut, im Kaufbereich, stabil", "kandidat", "good"],
+    ["Günstig, erst prüfen", grp("pruefen"), "unter Kaufkurs, aber ein Vorbehalt", "pruefen", "warn"],
+    ["Nahe Kaufkurs", grp("nahe"), "bis 15 % darüber", "nahe", ""],
+  ];
+  const minor = [
+    [`${m.universe} Aktien · ${rated.length} mit Rating`, null],
+    [`Methoden einig: ${ROWS.filter((r) => r.methods_agree).length}`, "einig"],
+    [`Gut, aber zu teuer: ${ROWS.filter((r) => r.verdict_code === "beobachten_teuer").length}`, "teuer"],
+    [`SEC-geprüft ${secAll ? `${secOk}/${secAll}` : "–"}`, null],
+    [`Mindestrendite ${pctPlain(m.min_return ?? 0.10, 0)}`, null],
+  ];
+  $("#kpis").innerHTML = `<div class="kpi-main">${main.map(([t, v, sub, p, cls]) =>
+      `<button class="kpi ${cls}" data-preset="${p}"><b>${v}</b><span>${t}</span><small>${sub}</small></button>`).join("")}</div>
+    <div class="kpi-minor">${minor.map(([t, p]) => p ? `<button class="link" data-preset="${p}">${esc(t)}</button>` : `<span>${esc(t)}</span>`).join("<i>·</i>")}</div>`;
+  document.querySelectorAll("#kpis [data-preset]").forEach((k) => k.onclick = () => setPreset(k.dataset.preset));
 }
 
-/* ---------- Kaufliste: gute Unternehmen nach Abstand zum Kaufkurs ---------- */
-const STATUS_CLS = { "Im Kaufbereich": "zone", "Im Kaufbereich – erst prüfen": "warn" };
+/* ---------- Kaufliste: gute Unternehmen nach Abstand zum Kaufkurs, gruppiert ---------- */
+const buyGroup = (r) => r.watch_status === "Im Kaufbereich" ? "kandidat"
+  : (r.watch_status || "").startsWith("Im Kaufbereich") ? "pruefen" : "nahe";
+const BUY_GROUPS = [
+  ["kandidat", "Kandidaten", "Qualität ≥ 7, Kurs unter Kaufkurs, kein Vorbehalt – zuerst anschauen"],
+  ["pruefen", "Günstig, erst prüfen", "Kurs unter Kaufkurs, aber ein Vorbehalt (Etikett) – Grund klären, bevor man einsteigt"],
+  ["nahe", "Nahe Kaufkurs", "bis 15 % über dem Kaufkurs – Kaufkurs merken"],
+];
+function reasonTags(r) {
+  const t = [], caps = r.score_caps || [], verdict = r.verdict || "";
+  if (/Markt zweifelt/.test(verdict)) t.push(["Markt zweifelt", "warn", "Kurs schwach und keine steigenden Gewinnschätzungen: auf Stabilisierung warten"]);
+  if (caps.some((c) => c.startsWith("Rechenwert > 60"))) t.push(["Rechenwert > 60 %", "warn", "Rechenwert mehr als 60 % über Kurs – der Markt sieht meist ein Risiko, das die Zahlen nicht zeigen"]);
+  if (caps.some((c) => c.startsWith("Ertragskraft ohne"))) t.push(["ohne Mehrjahresdaten", "warn", "Ertragskraft nur aus den letzten 12 Monaten"]);
+  if (/Bilanz-Warnsignal/.test(verdict)) t.push(["Bilanz prüfen", "warn", "Bilanz-Warnsignal"]);
+  if (/weitere Aktiengattung/.test(verdict)) t.push(["2. Gattung", "", verdict]);
+  if (r.analyst_warn) t.push(["⚠ Analysten", "warn", r.analyst_warn]);
+  if (V(r, "events")) t.push(["Ereignis", "warn", V(r, "events").map((e) => `${e.ereignis} ${e.jahr}`).join(", ")]);
+  if (r.in_buy_zone) t.push(["Chart in Buy-Zone", "zone", "Kurs an technischer Unterstützung"]);
+  if ((r.flags || []).includes("zahlen_in_kuerze")) {
+    const d = +r.earnings_in_days || 0;
+    t.push([d === 0 ? "Zahlen heute" : d === 1 ? "Zahlen morgen" : `Zahlen in ${d} T.`, "", "Quartalszahlen stehen an"]);
+  }
+  return t.map(([x, c, tip]) => `<span class="tag ${c}" title="${esc(tip)}">${esc(x)}</span>`).join("");
+}
+const distCell = (d) => isNum(d) ? `<span class="${d <= 0 ? "pos" : "muted"}">${pctN(d)}</span>` : dash;
 function topPicks() {
   const el = $("#top-picks");
   if (!el) return;
   const list = ROWS.filter((r) => r.on_buy_list).sort((a, b) => (a.buy_distance ?? 9) - (b.buy_distance ?? 9));
-  const note = (r) => {
-    const n = [];
-    if (r.verdict_code !== "kandidat") n.push(esc(r.verdict || ""));
-    if (r.analyst_warn) n.push(`<span class="warn-txt">⚠ ${esc(r.analyst_warn)}</span>`);
-    return n.join("<br>") || "Kandidat für die Einzelanalyse";
-  };
-  const row = (r) => `<tr data-s="${esc(r.symbol)}"><td class="l"><div class="name"><b>${esc(r.symbol)}</b><small>${esc(r.name)}</small></div></td>
-      <td class="l"><span class="tag ${STATUS_CLS[r.watch_status] || ""}">${esc(r.watch_status || "")}</span></td>
+  const row = (r) => `<tr data-s="${esc(r.symbol)}" title="${esc(r.verdict || "")}"><td class="l"><div class="name"><b>${esc(r.symbol)}</b><small>${esc(r.name)}</small></div></td>
       <td class="n">${scoreBadge(r.q_score)}</td><td class="n">${erCell(r)}</td>
       <td class="n">${money(r.price, r.currency)}</td><td class="n">${money(V(r, "buy_price"), r.currency)}</td>
-      <td class="n">${pct(r.buy_distance)}</td><td class="n">${scoreBadge(r.score)}</td>
-      <td class="l small" style="white-space:normal;min-width:16rem">${note(r)}</td></tr>`;
-  el.innerHTML = `<h3>Kaufliste · gute Unternehmen (Qualität ≥ 7), höchstens 15 % über dem Kaufkurs, sortiert nach Abstand</h3>
-    ${list.length ? `<div class="table-wrap"><table class="mini picks"><thead><tr><th class="l">Aktie</th><th class="l">Status</th><th>Qualität</th><th>Erw. Rendite</th><th>Kurs</th><th>Kaufkurs</th><th>Abstand</th><th>Rating</th><th class="l">Hinweis</th></tr></thead>
-      <tbody>${list.map(row).join("")}</tbody></table></div>` : '<p class="small muted">Heute erfüllt keine Aktie die Bedingungen.</p>'}
+      <td class="n">${distCell(r.buy_distance)}</td><td class="n">${scoreBadge(r.score)}</td>
+      <td class="l tags">${reasonTags(r) || '<span class="muted small">—</span>'}</td></tr>`;
+  const card = (r) => `<li data-s="${esc(r.symbol)}">
+      <div class="c1"><b>${esc(r.symbol)}</b><small>${esc(r.name)}</small>${scoreBadge(r.score)}</div>
+      <div class="c2"><span>Q ${fmt(r.q_score)}</span><span>Rendite ${erCell(r)}</span></div>
+      <div class="c2"><span>${money(r.price, r.currency)} → ${money(V(r, "buy_price"), "")}</span><span>${distCell(r.buy_distance)}</span></div>
+      ${reasonTags(r) ? `<div class="c3">${reasonTags(r)}</div>` : ""}</li>`;
+  const head = `<thead><tr><th class="l">Aktie</th><th>Qualität</th><th>Erw. Rendite</th><th>Kurs</th><th>Kaufkurs</th><th>Abstand</th><th>Rating</th><th class="l">Vorbehalte und Hinweise</th></tr></thead>`;
+  const groups = BUY_GROUPS.map(([g, title, sub]) => {
+    const rows = list.filter((r) => buyGroup(r) === g);
+    return `<section class="bl-group bl-${g}"><h4>${title} <span class="cnt">${rows.length}</span> <small>${sub}</small></h4>
+      ${rows.length ? `<div class="table-wrap bl-table"><table class="mini picks">${head}<tbody>${rows.map(row).join("")}</tbody></table></div>
+        <ul class="bl-cards">${rows.map(card).join("")}</ul>` : '<p class="small muted">Heute keine.</p>'}</section>`;
+  }).join("");
+  el.innerHTML = `<h3>Kaufliste · gute Unternehmen (Qualität ≥ 7), höchstens 15 % über dem Kaufkurs</h3>
+    ${list.length ? groups : '<p class="small muted">Heute erfüllt keine Aktie die Bedingungen.</p>'}
     <p class="note">Kaufkurs = Kurs, bei dem die erwartete Rendite die Hürde erreicht (mindestens ${pctPlain(DATA.meta.min_return ?? 0.10, 0)} p.a., bei hoher Unsicherheit mehr).
-      Ohne Aktien mit sehr hoher Unsicherheit. Die Liste ist eine Arbeitsreihenfolge für die Einzelanalyse, keine Kaufempfehlung.
-      Analystenziele zählen nicht in die Note; liegen sie unter dem Kurs, steht ein Warnhinweis.</p>`;
-  el.onclick = (e) => { const tr = e.target.closest("tr[data-s]"); if (tr) openDetail(tr.dataset.s); };
+      Abstand grün = Kurs unter dem Kaufkurs. Ohne Aktien mit sehr hoher Unsicherheit. Etiketten zeigen beim Darüberfahren den Grund.
+      Die Liste ist eine Arbeitsreihenfolge für die Einzelanalyse, keine Kaufempfehlung.</p>`;
+  el.onclick = (e) => { const tr = e.target.closest("[data-s]"); if (tr) openDetail(tr.dataset.s); };
 }
 
 function fillSelects() {
@@ -620,6 +653,40 @@ function closeDetail(fromHash) {
   if (fromHash !== true && location.hash) history.pushState("", document.title, location.pathname + location.search);
 }
 
+/* Preisleiste: wo steht der Kurs zwischen Bär, Kaufkurs, fairem Wert und Bulle? */
+function priceRuler(r, v) {
+  const sc = v.scenarios || {};
+  const pts = [
+    ["Bär", sc.bear && sc.bear.value, "bear"], ["Kaufkurs", v.buy_price, "buy"], ["Kurs", r.price, "px"],
+    ["Fairer Wert", v.fair_value, "fv"], ["Bulle", sc.bull && sc.bull.value, "bull"],
+  ].filter(([, x]) => isNum(x) && x > 0);
+  if (!isNum(v.buy_price) || !isNum(r.price) || pts.length < 3) return "";
+  const lo = Math.min(...pts.map((p) => p[1])), hi = Math.max(...pts.map((p) => p[1]));
+  const pad = (hi - lo) * 0.06 || hi * 0.05;
+  const a = lo - pad, b = hi + pad, X = (x) => ((x - a) / (b - a) * 100).toFixed(2);
+  const bearV = sc.bear && sc.bear.value, bullV = sc.bull && sc.bull.value;
+  const band = isNum(bearV) && isNum(bullV) ? `<div class="pr-band" style="left:${X(bearV)}%;width:${X(bullV) - X(bearV)}%"></div>` : "";
+  const zone = `<div class="pr-zone" style="left:0;width:${X(v.buy_price)}%"></div>`;
+  // Beschriftung abwechselnd oben/unten, damit nahe Marken sich nicht überdecken
+  const sorted = [...pts].sort((p, q) => p[1] - q[1]);
+  const last = { up: -99, down: -99, down2: -99 };
+  const marks = sorted.map(([k, x, cls]) => {
+    const pos = +X(x);
+    // Zeile wählen: Kurs immer oben, sonst die erste Zeile mit genug Abstand, notfalls die mit dem größten
+    const free = ["down", "up", "down2"].find((z) => pos - last[z] >= 30);
+    const row = cls === "px" ? "up" : free || ["down", "up", "down2"].sort((p, q) => last[p] - last[q])[0];
+    last[row] = pos;
+    const anchor = pos < 15 ? "al" : pos > 85 ? "ar" : "ac";
+    return `<div class="pr-mark pr-${cls} ${row} ${anchor}" style="left:${pos}%"><i></i><span><b>${k}</b> ${F[2].format(x)}</span></div>`;
+  }).join("");
+  const toBuy = r.price / v.buy_price - 1;
+  const msg = toBuy <= 0 ? `<b class="pos">Kurs ${pctPlain(-toBuy, 0)} unter dem Kaufkurs</b> – im Kaufbereich`
+    : `Kurs ${pctPlain(toBuy, 0)} über dem Kaufkurs – ${toBuy <= 0.15 ? "nahe dran" : "abwarten"}`;
+  return `<div class="panel pr-panel"><div class="pr-head"><h3>Preisleiste <span class="muted small">(${esc(r.currency)})</span></h3><span class="small">${msg}</span></div>
+    <div class="pr">${zone}${band}<div class="pr-axis"></div>${marks}</div>
+    <div class="note">Grün = Kaufbereich (Kurs bringt mindestens die Hürde von ${pctPlain(v.hurdle, 0)} p.a.) · grauer Balken = Spanne Bär bis Bulle (Szenario-Werte zu Eigenkapitalkosten).</div></div>`;
+}
+
 function openDetail(sym) {
   const r = ROWS.find((x) => x.symbol === sym);
   if (!r) return;
@@ -721,6 +788,7 @@ function openDetail(sym) {
         Timing = Mittel aus Momentum (${fmt(r.mom_score)}) und Gewinnrevisionen (${fmt(r.rev_score)}), bei Zyklikern höchstens 5</td></tr>
     </table>${(r.score_caps || []).length ? `<div class="flag-list">Rating gedeckelt: ${esc(r.score_caps.join(", "))}</div>` : ""}`;
   const sc = v.scenarios || {};
+  const ruler = priceRuler(r, v);
   const decision = isNum(v.er) ? `
       <dl class="kv big-kv">
         <dt>Kurs</dt><dd>${money(r.price, r.currency)}</dd>
@@ -798,7 +866,8 @@ function openDetail(sym) {
       </div>
     </div>
 
-    <div class="d-grid">
+    ${ruler}
+    <div class="d-grid d-grid-decide">
       <div class="panel">
         <div class="chart-legend">
           <span><i style="background:var(--series-price)"></i>Kurs</span>
@@ -810,6 +879,7 @@ function openDetail(sym) {
           <div class="range">${["6M", "1J", "2J"].map((x, i) => `<button data-r="${x}" class="${i === 1 ? "on" : ""}">${x}</button>`).join("")}</div>
         </div>
         <div class="chart-box" id="chart"></div>
+        <div class="note" id="chartOff" hidden></div>
         <div class="note">Tagesschlusskurse, dividenden- und splitbereinigt · letzter Kurstag ${esc(r.last_date)} · RSI(14) ${fmt(r.rsi14, 0)} · Abstand SMA200 ${pct(r.dist_sma200)} · 52W ${money(r.low52, "")} – ${money(r.high52, "")} · Trend: ${esc(r.trend)}</div>
         <h4>Einstieg laut Chart [BERECHNET aus Kursreihe]</h4>
         ${r.in_buy_zone && !stale ? '<div class="ok-line">● Kurs liegt in Buy-Zone 1 (Unterstützung)</div>' : ""}
@@ -1011,6 +1081,22 @@ async function drawChart(r, px) {
     price.createPriceLine({ ...opt, price: z.low, title: "", axisLabelVisible: false });
   });
   const vv = r.valuation || {};
+  const lastC = closes[closes.length - 1].value;
+  const inView = (x) => isNum(x) && x > lastC * 0.6 && x < lastC * 1.6;   // sonst würde der Kursverlauf zu stark gestaucht
+  const extra = [vv.buy_price, vv.fair_value].filter(inView);
+  if (extra.length) price.applyOptions({
+    autoscaleInfoProvider: (orig) => {
+      const res = orig();
+      if (!res || !res.priceRange) return res;
+      return { ...res, priceRange: { minValue: Math.min(res.priceRange.minValue, ...extra) * 0.98, maxValue: Math.max(res.priceRange.maxValue, ...extra) * 1.02 } };
+    },
+  });
+  const off = [["Kaufkurs", vv.buy_price], ["Fairer Wert", vv.fair_value]].filter(([, x]) => isNum(x) && !inView(x));
+  const offEl = $("#chartOff");
+  if (offEl && off.length) {
+    offEl.hidden = false;
+    offEl.innerHTML = off.map(([k, x]) => `${k} ${money(x, px.currency)} liegt ${x > lastC ? "über" : "unter"} dem Chartbereich (${pctN(x / lastC - 1, 0)} zum Kurs).`).join(" ");
+  }
   if (isNum(vv.buy_price)) price.createPriceLine({ price: vv.buy_price, color: cssVar("--good"), lineWidth: 2, lineStyle: 0, title: "Kaufkurs" });
   if (isNum(vv.fair_value)) price.createPriceLine({ price: vv.fair_value, color: cssVar("--text-muted"), lineWidth: 1, lineStyle: 3, title: "Fairer Wert" });
   const setRange = (k) => {
