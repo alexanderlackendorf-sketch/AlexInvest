@@ -1,13 +1,20 @@
-"""Rating 1-10 (Modell 3) und Urteile nach den Regeln des Projekts "Aktienanalyse".
+"""Rating 1-10 (Modell 5: Kaufrating) und Urteile nach den Regeln des Projekts "Aktienanalyse".
 
-Rating = 40 % Bewertung + 35 % Qualität + 15 % Momentum + 10 % Gewinnrevisionen, danach harte Deckel:
-  Bewertung (0-10)  60 % erwartete Rendite (IRR zum heutigen Kurs), 20 % gegenüber der eigenen
-                    Bewertungshistorie, 20 % gegenüber der Vergleichsgruppe (Owner-Earnings-, FCF-Rendite, EV/EBITDA)
-  Qualität (0-10)   absolute Skala (quality.py)
-  Momentum (0-10)   Kursentwicklung 12 Monate ohne letzten Monat, Perzentil im Universum
-  Revisionen (0-10) Änderung der Konsens-Gewinnschätzung 90 Tage und Saldo der Anpassungen 30 Tage
-  Deckel            Qualität < 5 -> max. 5 (< 4 -> max. 4); Bilanz-Warnsignal -> max. 4;
-                    erwartete Rendite < 8 % -> max. 6; Bewertung nicht möglich -> max. 6
+Leitfrage des Ratings: "Wie attraktiv ist ein Kauf zum heutigen Kurs?" – nicht "Wie gut ist das Unternehmen?"
+(dafür gibt es die Qualitätsnote). Ein hohes Rating setzt deshalb einen Kurs im Kaufbereich voraus.
+
+Rating = 50 % Bewertung + 35 % Qualität + 15 % Timing, danach harte Deckel:
+  Bewertung (0-10)  75 % Überrendite = erwartete Rendite (IRR zum heutigen Kurs) minus Hürde der Aktie
+                    (Hürde = max(Mindestrendite 10 %, Eigenkapitalkosten nach Unsicherheit)), 12,5 % gegenüber der eigenen
+                    Bewertungshistorie, 12,5 % gegenüber der Vergleichsgruppe (Owner-Earnings-, FCF-Rendite, EV/EBITDA)
+  Qualität (0-10)   absolute Skala (quality.py); Banken/Versicherer höchstens 8,5 (Bilanzrisiken von außen kaum prüfbar)
+  Timing (0-10)     Mittel aus Momentum (12-1 Monate, Perzentil) und Gewinnrevisionen (90 Tage, Saldo 30 Tage);
+                    bei Zyklikern höchstens 5 (steigende Kurse und Schätzungen sind dort oft das Zyklushoch)
+  Deckel            Qualität < 5 -> max. 5 (< 4 -> max. 4); Bilanz-Warnsignal -> max. 4; Gewinnqualität -> max. 6;
+                    keine Stabilisierung (Momentum im unteren Drittel und keine steigenden Schätzungen) -> max. 6,9;
+                    Kurs über Kaufkurs (Überrendite < 0) -> max. 6,5; < -3 Pp. -> max. 5,5; < -6 Pp. -> max. 4,5;
+                    Unsicherheit "sehr hoch" -> max. 6; möglicher Spitzengewinn ohne Mehrjahresdaten -> max. 5;
+                    keine belastbare Bewertung -> max. 5; Daten nicht ausreichend -> kein Rating
 Drei Profi-Methoden als Gegenprobe (Ampeln): Quant-Faktoren, erwartete Rendite, fairer Wert mit Sicherheitsmarge.
 "Kandidat" verlangt zusätzlich eine Stabilisierung: Momentum nicht im unteren Drittel des Universums oder
 positive Gewinnrevisionen (Revisions-Score >= 6). Sonst "günstig, aber Markt zweifelt" (fallendes Messer).
@@ -298,10 +305,14 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
     Q, V, warn = {}, {}, {}
     for s in df.index:
         row = df.loc[s].to_dict()
+        row["symbol"] = s
         row["flags"] = list(row.get("flags") or []) + extra_flags[s]
         row["cyclical_evidenced"] = cyc_ev.get(s, False)
         mp = margin_pct.get(s)
         Q[s] = quality.quality(row, None if mp != mp else mp)
+        if row.get("is_financial") and Q[s]["score"] is not None and Q[s]["score"] > FIN_Q_MAX:
+            Q[s]["adjustments"] = list(Q[s]["adjustments"]) + [("Bank/Versicherer: höchstens 8,5", FIN_Q_MAX - Q[s]["score"])]
+            Q[s]["score"] = FIN_Q_MAX
         V[s] = valuation.fair_value(row, Q[s]["score"])
         warn[s] = red_flags(row)
         if any(lv == "schieflage" for lv, _ in warn[s]):
@@ -319,17 +330,21 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
     q_pct = q_ser.rank(pct=True)
 
     rows_out = {k: [] for k in ("q_score", "q_components", "q_adjustments", "valuation", "price_score", "v_parts",
-                                "mom_score", "rev_score", "score", "lenses", "methods_agree", "warn_why", "score_caps")}
+                                "mom_score", "rev_score", "timing_score", "score", "lenses", "methods_agree",
+                                "warn_why", "score_caps")}
     for s in df.index:
         row = df.loc[s].to_dict()
         q, v = Q[s]["score"], V[s] or {}
         sv = _nan_none(sector_val.get(s))
-        parts = {"Erwartete Rendite": v.get("er_score"), "vs. eigene Historie": v.get("hist_score"),
+        parts = {"Überrendite": excess_score(v), "vs. eigene Historie": v.get("hist_score"),
                  "vs. Vergleichsgruppe": None if sv is None else round(sv, 1)}
         p_sc = value_score(parts)
         m_sc = None if pd.isna(mom_pct.get(s)) else round(float(mom_pct[s]) * 10, 1)
         r_sc = revision_score(row)
-        total, caps = total_score(q, p_sc, m_sc, r_sc, v, {lv for lv, _ in warn[s]})
+        flg = set(row.get("flags") or []) | set(extra_flags[s])
+        cyc = bool(cyc_ev.get(s)) or bool({"zyklik_normalisiert", "zyklik_spitzengewinn"} & flg)
+        t_sc = timing_score(m_sc, r_sc, cyc)
+        total, caps = total_score(q, p_sc, t_sc, v, {lv for lv, _ in warn[s]}, flg, is_stable(m_sc, r_sc))
         lens = lenses(v, row.get("price"), _nan_none(sv), _nan_none(q_pct.get(s)), _nan_none(mom_pct.get(s)))
         agree = all(l["ampel"] == "gruen" for l in lens.values()) and not warn[s] and (q or 0) >= Q_GOOD
         if agree:
@@ -338,7 +353,7 @@ def score(df: pd.DataFrame) -> pd.DataFrame:
             extra_flags[s].append("value_trap_risiko")
         for k, x in (("q_score", q), ("q_components", Q[s]["components"]), ("q_adjustments", Q[s]["adjustments"]),
                      ("valuation", V[s]), ("price_score", p_sc), ("v_parts", parts), ("mom_score", m_sc),
-                     ("rev_score", r_sc), ("score", total), ("lenses", lens), ("methods_agree", agree),
+                     ("rev_score", r_sc), ("timing_score", t_sc), ("score", total), ("lenses", lens), ("methods_agree", agree),
                      ("warn_why", [t for _, t in warn[s]]), ("score_caps", caps)):
             rows_out[k].append(x)
     for k, col in rows_out.items():
@@ -373,18 +388,41 @@ def share_classes(df: pd.DataFrame) -> list:
             for s in df.index]
 
 
-WEIGHTS = {"Bewertung": 0.40, "Qualität": 0.35, "Momentum": 0.15, "Revisionen": 0.10}
-VALUE_WEIGHTS = {"Erwartete Rendite": 0.6, "vs. eigene Historie": 0.2, "vs. Vergleichsgruppe": 0.2}
-MODEL_VERSION = 4   # 1: Perzentil-Rangfolge, 2: Qualität + fairer Wert, 3: erwartete Rendite + Faktoren + Forensik,
+WEIGHTS = {"Bewertung": 0.50, "Qualität": 0.35, "Timing": 0.15}
+VALUE_WEIGHTS = {"Überrendite": 0.75, "vs. eigene Historie": 0.125, "vs. Vergleichsgruppe": 0.125}
+MODEL_VERSION = 5   # 1: Perzentil-Rangfolge, 2: Qualität + fairer Wert, 3: erwartete Rendite + Faktoren + Forensik,
 #                     4: wie 3, plus Stabilisierung, Markt-Zweifel, Wachstumsdeckel, echtes Bärszenario
-ER_MIN_FOR_GOOD = 0.08
+#                     5: Kaufrating – Überrendite über der Hürde statt absoluter Rendite, Deckel relativ zum
+#                        Kaufkurs, Timing gebündelt und für Zykliker begrenzt, Finanzwerte-Qualität begrenzt
+# Überrendite (erwartete Rendite − Hürde) -> 0-10. 0 Pp. = Kurs genau am Kaufkurs = 6,5
+EX_PTS = [(-0.08, 0.5), (-0.06, 2), (-0.04, 3.5), (-0.02, 5), (0.0, 6.5), (0.02, 8), (0.04, 9), (0.06, 10)]
+FIN_Q_MAX = 8.5
+TIMING_CYCLICAL_MAX = 5.0
+FAIR_GAP = 0.03   # "fair bewertet": erwartete Rendite höchstens 3 Pp. unter der Hürde (vorher fest 8 %)
 REV_PTS = [(-0.10, 0), (-0.03, 2.5), (0.0, 5), (0.03, 7.5), (0.10, 10)]
 BREADTH_PTS = [(-0.5, 0), (0.0, 5), (0.5, 10)]
 
 
+def excess_score(v: dict | None) -> float | None:
+    """Überrendite (erwartete Rendite − Hürde) auf 0-10."""
+    v = v or {}
+    er, h = _nan_none(v.get("er")), _nan_none(v.get("hurdle"))
+    if er is None or h is None:
+        return None
+    return round(quality.scale(er - h, EX_PTS), 1)
+
+
+def timing_score(mom, rev, cyclical: bool = False) -> float | None:
+    vals = [x for x in (_nan_none(mom), _nan_none(rev)) if x is not None]
+    if not vals:
+        return None
+    t = sum(vals) / len(vals)
+    return round(min(t, TIMING_CYCLICAL_MAX) if cyclical else t, 1)
+
+
 def value_score(parts: dict) -> float | None:
     """Bewertung 0-10; ohne erwartete Rendite keine Bewertung (Relativvergleiche allein tragen nicht)."""
-    if parts.get("Erwartete Rendite") is None:
+    if parts.get("Überrendite") is None:
         return None
     avail = {k: v for k, v in parts.items() if v is not None}
     w = sum(VALUE_WEIGHTS[k] for k in avail)
@@ -423,23 +461,42 @@ def red_flags(row: dict) -> list[tuple[str, str]]:
     return out
 
 
-def total_score(q, p, m, rv, v: dict, warn) -> tuple[float | None, list[str]]:
-    """warn: Menge der Warnstufen ({"schieflage", "gewinnqualitaet"}); True gilt als Schieflage."""
-    """Rating 1-10 und angewandte Deckel. Ohne Qualitäts-Score kein Rating."""
+def is_stable(mom, rev) -> bool:
+    """Stabilisierung: Momentum nicht im unteren Drittel oder steigende Gewinnschätzungen."""
+    mom, rev = _nan_none(mom), _nan_none(rev)
+    return (mom is not None and mom >= MOM_STABLE) or (rev is not None and rev >= REV_STABLE)
+
+
+def total_score(q, p, t, v: dict, warn, flags=(), stable: bool = True) -> tuple[float | None, list[str]]:
+    """Kaufrating 1-10 und angewandte Deckel. Ohne Qualitäts-Score kein Rating.
+    q Qualität, p Bewertung, t Timing (je 0-10); v Bewertungsdaten (er, hurdle, uncertainty);
+    warn: Menge der Warnstufen ({"schieflage", "gewinnqualitaet"}), True gilt als Schieflage."""
     if q is None:
         return None, []
-    comp = {"Bewertung": p, "Qualität": q, "Momentum": m, "Revisionen": rv}
+    comp = {"Bewertung": p, "Qualität": q, "Timing": t}
     avail = {k: x for k, x in comp.items() if x is not None}
     w = sum(WEIGHTS[k] for k in avail)
     s = sum(WEIGHTS[k] * x for k, x in avail.items()) / w
     caps = []
-    er = (v or {}).get("er")
+    v = v or {}
+    er, h = _nan_none(v.get("er")), _nan_none(v.get("hurdle"))
+    ex = None if er is None or h is None else er - h
     warn = {"schieflage"} if warn is True else set(warn or ())
+    flags = set(flags or ())
     for cond, lim, why in ((q < 4, 4.0, "Qualität < 4"), (q < 5, 5.0, "Qualität < 5"),
                            ("schieflage" in warn, 4.0, "finanzielle Schieflage"),
                            ("gewinnqualitaet" in warn, 6.0, "Gewinnqualität prüfen"),
-                           (p is None, 6.0, "keine belastbare Bewertung"),
-                           (er is not None and er < ER_MIN_FOR_GOOD, 6.0, "erwartete Rendite < 8 %")):
+                           (p is None, 5.0, "keine belastbare Bewertung"),
+                           ("zyklik_spitzengewinn" in flags, 5.0, "möglicher zyklischer Spitzengewinn"),
+                           (v.get("uncertainty") == "sehr hoch", 6.0, "Unsicherheit sehr hoch"),
+                           (ex is not None and ex < -0.06, 4.5, "Kurs weit über Kaufkurs (Überrendite < −6 Pp.)"),
+                           (ex is not None and ex < -0.03, 5.5, "Kurs deutlich über Kaufkurs (Überrendite < −3 Pp.)"),
+                           (ex is not None and ex < 0, 6.5, "Kurs über Kaufkurs"),
+                           (not stable, 6.9, "Markt zweifelt (Kurs schwach, keine steigenden Schätzungen)"),
+                           ((_nan_none(v.get("upside")) or 0) > 0.6, 6.5,
+                            "Rechenwert > 60 % über Kurs – Markt sieht ein Risiko, das das Modell nicht sieht"),
+                           (str(v.get("cf0_src") or "").startswith("FCF letzte 12 Monate"), 6.5,
+                            "Ertragskraft ohne Mehrjahresdaten")):
         if cond and s > lim:
             s = lim
             caps.append(why)
@@ -471,6 +528,34 @@ MOM_STABLE = 10 / 3   # Momentum-Score (Perzentil × 10) nicht im unteren Dritte
 REV_STABLE = 6.0      # Revisions-Score: Schätzungen werden angehoben
 KAUF_EXIT_TOL = 1.05   # Hysterese: Kandidat bleibt, solange der Kurs max. 5 % über dem Kaufkurs liegt
 NEAR_TOL = 1.10        # "nahe Kaufbereich": Kurs höchstens 10 % über dem Kaufkurs
+LIST_TOL = 0.15        # Kaufliste: gute Unternehmen bis 15 % über dem Kaufkurs
+ANALYST_MIN_N = 5      # Analystenhinweis erst ab 5 Analysten (Kursziel = Vergleich, nicht Teil der Note)
+
+
+def watch_entry(row: dict, code: str) -> dict:
+    """Kaufliste: Abstand zum Kaufkurs und Status. Keine Note, sondern eine Reihenfolge zum Abarbeiten."""
+    v = row.get("valuation") or {}
+    q, price, buy = _nan_none(row.get("q_score")), _nan_none(row.get("price")), _nan_none(v.get("buy_price"))
+    dist = (price / buy - 1) if (price and buy and buy > 0) else None
+    on_list = bool(q is not None and q >= Q_GOOD and dist is not None and dist <= LIST_TOL
+                   and v.get("uncertainty") != "sehr hoch" and code != "nab")
+    if not on_list:
+        status = None
+    elif code == "kandidat":
+        status = "Im Kaufbereich"
+    elif dist <= 0:
+        status = "Im Kaufbereich – erst prüfen"
+    elif dist <= NEAR_TOL - 1:
+        status = "Nahe Kaufkurs"
+    else:
+        status = "Bis 15 % über Kaufkurs"
+    out = {"buy_distance": None if dist is None else round(dist, 3), "on_buy_list": on_list, "watch_status": status}
+    tgt, n = _nan_none(row.get("analyst_target")), row.get("analyst_count") or 0
+    if tgt and price and n >= ANALYST_MIN_N and tgt < price and dist is not None and dist <= LIST_TOL:
+        de = f"{tgt:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        out["analyst_warn"] = (f"Ø Analystenziel {de} liegt unter dem Kurs ({tgt / price - 1:+.0%}, {n} Analysten) – "
+                               "Modell und Markt widersprechen sich; Grund klären").replace("%", " %")
+    return out
 
 
 def assess(row: dict, prev_code: str | None = None) -> dict:
@@ -495,7 +580,7 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
     if buy and v.get("buy_out_of_reach"):
         buy_txt = " · Kaufkurs außer Reichweite (über 50 % unter Kurs)"
     mom, rev = _nan_none(row.get("mom_score")), _nan_none(row.get("rev_score"))
-    stable = (mom is not None and mom >= MOM_STABLE) or (rev is not None and rev >= REV_STABLE)
+    stable = is_stable(mom, rev)
     twin = row.get("share_class_of")
 
     if q is None or dq == "rot":
@@ -522,7 +607,7 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
     elif q >= Q_OK:
         if in_buy:
             code, text = "beobachten", "Solide Qualität, günstig bewertet" + buy_txt
-        elif er >= ER_MIN_FOR_GOOD:
+        elif hurdle is not None and er >= hurdle - FAIR_GAP:
             code, text = "neutral", "Solide Qualität, fair bewertet"
         else:
             code, text = "meiden_teuer", "Solide Qualität, aber zu teuer"
@@ -531,6 +616,9 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
             code, text = "meiden", "Schwache Qualität, niedrig bewertet – Value-Falle möglich"
         else:
             code, text = "meiden_schwach", "Meiden – schwache Qualität"
+    blocking = [c for c in (row.get("score_caps") or []) if c.startswith(("Rechenwert > 60", "Ertragskraft ohne"))]
+    if code == "kandidat" and blocking:
+        code, text = "beobachten", "Gutes Unternehmen im Kaufbereich – aber " + blocking[0] + ": erst Einzelanalyse"
     if row.get("methods_agree") and code == "kandidat":
         text += " · alle drei Methoden einig"
     if code in ("kandidat", "beobachten") and a["Einstieg"] == "gruen" and row.get("in_buy_zone"):
@@ -538,7 +626,14 @@ def assess(row: dict, prev_code: str | None = None) -> dict:
     if "zahlen_in_kuerze" in flags and code != "nab":
         d = int(row.get("earnings_in_days") or 0)
         text += " · Zahlen " + ("heute" if d == 0 else "morgen" if d == 1 else f"in {d} Tagen")
-    return {"ampeln": a, "data_why": dq_why, "verdict_code": code, "verdict": text}
+    events = v.get("events") or []
+    if events and code != "nab":
+        text += " · bekanntes Ereignis: " + ", ".join(f"{e['ereignis']} {e['jahr']}" for e in events)
+    out = {"ampeln": a, "data_why": dq_why, "verdict_code": code, "verdict": text}
+    out.update(watch_entry(row, code))
+    if code == "nab":
+        out["score"] = None   # Daten nicht ausreichend: kein Rating (sonst würde eine Zahl Sicherheit vortäuschen)
+    return out
 
 
 def ampel_component(v) -> str:

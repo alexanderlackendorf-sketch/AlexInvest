@@ -27,15 +27,62 @@ Markt zweifelt: Liegt das eingepreiste Wachstum (Reverse-DCF) mehr als 8 Pp. unt
    REITs 8,5 %) + 25 % eigene Bewertungshistorie (Ertragskraft / Median-Owner-Earnings-Rendite 5 J.,
    höchstens das 1,5-Fache der heutigen Bewertung: alte Hype-Bewertungen werden nicht fortgeschrieben).
    Unsicherheit gering/mittel/hoch/sehr hoch (Morningstar-Logik) -> nötige Sicherheitsmarge 15/25/35/50 %.
-Kaufkurs = Kurs, bei dem die erwartete Rendite die Hürde erreicht: Hürde = Eigenkapitalkosten + 2 Pp.
-  (das Risiko steckt schon in den Eigenkapitalkosten; kein zweiter Aufschlag nach Qualität).
+Kaufkurs = Kurs, bei dem die erwartete Rendite die Hürde erreicht: Hürde = höherer Wert aus der persönlichen
+  Mindestrendite (config/settings.json, Standard 10 %) und den Eigenkapitalkosten nach Unsicherheit (bis 11 %).
   Liegt der Kaufkurs mehr als 50 % unter dem Kurs, gilt er als "außer Reichweite".
 Szenarien: Bär = Schrumpfung (Wachstum höchstens -2 %, Ertragskraft -25 %, kurze Vorteils-Periode),
   Bulle = Wachstum +3 Pp., Ertragskraft +10 %.
 """
 from __future__ import annotations
 
+import datetime as _dt
+import json as _json
+from pathlib import Path as _Path
+
 from .quality import scale
+
+_CONFIG = _Path(__file__).resolve().parent.parent / "config"
+
+
+def _load_json(name: str, default):
+    try:
+        return _json.loads((_CONFIG / name).read_text(encoding="utf-8"))
+    except (FileNotFoundError, _json.JSONDecodeError):
+        return default
+
+
+MIN_RETURN = float(_load_json("settings.json", {}).get("mindestrendite", 0.10))
+EVENT_MAX_AGE_DAYS = 365
+
+
+def load_events(today: _dt.date | None = None) -> dict[str, list[dict]]:
+    """Bekannte Ereignisse je Symbol aus config/known_risks.json (nur geprüfte, nicht veraltete Einträge)."""
+    today = today or _dt.date.today()
+    out: dict[str, list[dict]] = {}
+    for e in _load_json("known_risks.json", {}).get("ereignisse", []):
+        try:
+            age = (today - _dt.date.fromisoformat(e["geprueft"])).days
+            if age > EVENT_MAX_AGE_DAYS or not (0 < float(e["umsatzanteil"]) <= 1) or not (0 < float(e["erosion"]) <= 1):
+                continue
+        except (KeyError, ValueError, TypeError):
+            continue
+        out.setdefault(e["symbol"], []).append(e)
+    return out
+
+
+EVENTS = load_events()
+
+
+def event_shock(events: list[dict], today: _dt.date | None = None) -> list[tuple[int, float]]:
+    """(Jahr ab heute, Faktor) – je Ereignis halbe Erosion im Ereignisjahr, halbe im Folgejahr, dauerhaft."""
+    year = (today or _dt.date.today()).year
+    out = []
+    for e in events:
+        t = max(1, int(e["jahr"]) - year)
+        loss = float(e["umsatzanteil"]) * float(e["erosion"])
+        f = (1 - loss) ** 0.5
+        out += [(t, f), (t + 1, f)]
+    return out
 
 COE, COE_FIN, COE_REIT = 0.09, 0.10, 0.085   # Eigenkapitalkosten: langfristige Aktienmarktrendite ~9 % [SCHÄTZUNG]
 # Eigenkapitalkosten nach Unsicherheit (Morningstar-Praxis: ~7,5-10,5 %) statt Beta
@@ -59,11 +106,14 @@ HIST_YIELD_MIN = 0.035   # eigene Bewertungshistorie höchstens ~28x Ertragskraf
 HIST_RATIO_MAX = 1.5     # Rückkehr höchstens zur 1,5-fachen heutigen Bewertung
 W_HIST = 0.25            # Gewicht der eigenen Bewertungshistorie im fairen Wert (Rest: DCF)
 DOUBT_GAP = 0.08         # Modellwachstum mehr als 8 Pp. über dem eingepreisten Wachstum -> Markt zweifelt
-HURDLE_PREMIUM = 0.02
+# Hürde: siehe hurdle_for (Mindestrendite aus config/settings.json)
 OUT_OF_REACH = 0.5       # Kaufkurs < 50 % des Kurses -> "außer Reichweite"
 BEAR = {"g_max": -0.02, "dg": -0.04, "cf": 0.75}
 G_NEAR_MIN, G_NEAR_MAX = -0.15, 0.25   # Konsenswachstum Jahre 1-2
 BULL = {"dg": 0.03, "cf": 1.10}
+OP_DROP = 0.9           # operative Marge > 10 % unter dem 5J-Schnitt = echter Margenrückgang
+CAPEX_BOOM = 0.6        # FCF-basierte Ertragskraft < 60 % der Owner Earnings -> Investitionsboom
+NO_HIST_SRC = "FCF letzte 12 Monate"
 
 
 def _v(x):
@@ -130,7 +180,7 @@ def shorter_cap(cap: int) -> int:
 
 
 def _path(cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW,
-          near: list | None = None) -> tuple[list[float], float]:
+          near: list | None = None, shock: list | None = None) -> tuple[list[float], float]:
     """Ausschüttbare Zahlungen Jahre 1-15 und Zahlung im Jahr 16 (Basis der ewigen Rente).
     Wachstum g bis Jahr 5 (bei CAP_NONE bis Jahr 3), danach linear bis zum Jahr `cap` auf 3 %.
     near: Wachstum für Jahr 1 und 2 (Konsens), None-Einträge = g."""
@@ -141,6 +191,9 @@ def _path(cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW,
         if near and t <= len(near) and near[t - 1] is not None:
             gt = near[t - 1]
         e *= 1 + gt
+        for ts, f in (shock or ()):
+            if ts == t:
+                e *= f   # bekanntes Ereignis (Patentablauf u. ä.): Ertragskraft fällt dauerhaft
         rein = 0.0 if roic is None else _clip(max(gt, 0.0) / roic, 0.0, 0.9)
         flows.append(e * (1 - rein))
     e11 = e * (1 + G_TERMINAL)
@@ -149,41 +202,43 @@ def _path(cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW,
 
 
 def value(cf0: float, g: float, roic: float | None, rate: float, at_year: int = 0, cap: int = CAP_NARROW,
-          near: list | None = None) -> float:
+          near: list | None = None, shock: list | None = None) -> float:
     """Barwert je Aktie; at_year=n: Wert in n Jahren (Zahlungen ab Jahr n+1)."""
-    flows, cf11 = _path(cf0, g, roic, cap, near)
+    flows, cf11 = _path(cf0, g, roic, cap, near, shock)
     pv = sum(cf / (1 + rate) ** (t - at_year) for t, cf in enumerate(flows, 1) if t > at_year)
     return pv + cf11 / (rate - G_TERMINAL) / (1 + rate) ** (YEARS - at_year)
 
 
-def irr(price: float, cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW, near: list | None = None) -> float:
+def irr(price: float, cf0: float, g: float, roic: float | None, cap: int = CAP_NARROW, near: list | None = None,
+        shock: list | None = None) -> float:
     lo, hi = G_TERMINAL + 0.005, 0.60
-    if value(cf0, g, roic, lo, cap=cap, near=near) <= price:
+    if value(cf0, g, roic, lo, cap=cap, near=near, shock=shock) <= price:
         return lo
-    if value(cf0, g, roic, hi, cap=cap, near=near) >= price:
+    if value(cf0, g, roic, hi, cap=cap, near=near, shock=shock) >= price:
         return hi
     for _ in range(60):
         mid = (lo + hi) / 2
-        if value(cf0, g, roic, mid, cap=cap, near=near) > price:
+        if value(cf0, g, roic, mid, cap=cap, near=near, shock=shock) > price:
             lo = mid
         else:
             hi = mid
     return (lo + hi) / 2
 
 
-def implied_growth(price: float, cf0: float, roic: float | None, rate: float = COE, cap: int = CAP_NARROW) -> float | None:
+def implied_growth(price: float, cf0: float, roic: float | None, rate: float = COE, cap: int = CAP_NARROW,
+                   shock: list | None = None) -> float | None:
     """Reverse-DCF: Wachstum J. 1-5, das der Kurs bei `rate` einpreist. Bei ROIC <= Kapitalkosten schafft
     Wachstum keinen Wert – dann ist die Frage nicht sinnvoll beantwortbar."""
     if roic is not None and roic <= rate + 0.01:
         return None
     lo, hi = -0.10, 0.40
-    if value(cf0, lo, roic, rate, cap=cap) >= price:
+    if value(cf0, lo, roic, rate, cap=cap, shock=shock) >= price:
         return lo
-    if value(cf0, hi, roic, rate, cap=cap) <= price:
+    if value(cf0, hi, roic, rate, cap=cap, shock=shock) <= price:
         return hi
     for _ in range(60):
         mid = (lo + hi) / 2
-        if value(cf0, mid, roic, rate, cap=cap) < price:
+        if value(cf0, mid, roic, rate, cap=cap, shock=shock) < price:
             lo = mid
         else:
             hi = mid
@@ -191,24 +246,47 @@ def implied_growth(price: float, cf0: float, roic: float | None, rate: float = C
 
 
 # --- Ertragskraft ---
+def _margin_fell(r: dict) -> bool:
+    om, om5 = _v(r.get("op_margin")), _v(r.get("op_margin_avg5"))
+    return om is not None and om5 is not None and om5 > 0 and om < OP_DROP * om5
+
+
 def base_cash_flow(r: dict, cyclical: bool) -> tuple[float | None, str]:
     price = _v(r.get("price"))
     rev_ps = _v(r.get("rev_ps_trading"))
     sbc_ps = _v(r.get("sbc_ps_trading")) or 0.0
     med, last = _v(r.get("owner_margin_med5")), _v(r.get("owner_margin_last"))
     if rev_ps and med is not None:
-        # Normalisiert über den 5-Jahres-Median: Einmalzahlungen im operativen Cashflow (Steuernachzahlungen,
-        # Kaufpreis-Nachzahlungen wie Coca-Colas Fairlife 2025) verzerren ein einzelnes Jahr stark
         med10 = _v(r.get("owner_margin_med10"))
         if cyclical and med10 is not None and med10 < med:
             m, how = med10, "Median-Marge 10 J. (Zykliker, ganzer Zyklus)"
-        elif cyclical or last is None or last <= med:
-            m, how = med, "Median-Marge 5 J." + (" (Zykliker)" if cyclical else "")
+        elif cyclical:
+            m, how = med, "Median-Marge 5 J. (Zykliker)"
+        elif last is not None and last < med and _margin_fell(r):
+            # V5b: Marge auch operativ gesunken -> echter Rückgang, keine Erholung unterstellen
+            # (ein schwaches Cashflow-Jahr allein, z. B. Steuernachzahlung, zählt weiter über den Median)
+            m, how = last, "Marge letztes GJ (operativ gesunken – keine Erholung unterstellt)"
+        elif last is None or last <= med:
+            m, how = med, "Median-Marge 5 J."
         elif (_v(r.get("op_margin_trend")) or 0) > 0.01:
             m, how = last, "Marge letztes GJ (steigt strukturell)"
         else:
             m, how = (last + med) / 2, "Ø Marge letztes GJ und 5J-Median"
-        return m * rev_ps - sbc_ps, f"Owner Earnings ({how} {m:.1%} × Umsatz je Aktie) − Aktienvergütung"
+        cf, txt = m * rev_ps - sbc_ps, f"Owner Earnings ({how} {m:.1%} × Umsatz je Aktie) − Aktienvergütung"
+        # V5b: Investitionsboom – tatsächlicher FCF weit unter den Owner Earnings (Investitionen >> Abschreibungen)
+        att = 1 - (_v(r.get("minority_share")) or 0.0)
+        ttm = _v(r.get("fcf_margin"))   # Yahoo TTM: konsolidiert, ohne Minderheiten-Abzug
+        fm = [x for x in (None if ttm is None else ttm * att, _v(r.get("fcf_margin_avg5"))) if x is not None]
+        if fm and cf > 0:
+            cash = (sum(fm) / len(fm)) * rev_ps - sbc_ps
+            if cash < CAPEX_BOOM * cf:
+                cf = (cf + max(cash, 0.0)) / 2
+                txt += f"; Investitionsboom: Mittel mit FCF-basierter Ertragskraft ({max(cash, 0):.2f})"
+        if _v(r.get("minority_share")):
+            txt += f"; nur Anteil der Aktionäre ({att:.0%}, ohne Minderheiten)"
+        if r.get("lease_deducted"):
+            txt += "; nach Leasingtilgung (IFRS 16)"
+        return cf, txt
     own = _v(r.get("owner_ps_trading"))
     if own is not None:
         return own - sbc_ps, "Owner Earnings letztes GJ − Aktienvergütung"
@@ -236,8 +314,8 @@ def roic_for(r: dict) -> tuple[float, str]:
 
 
 def hurdle_for(coe: float) -> float:
-    """Mindestrendite für einen Kauf = Eigenkapitalkosten (enthalten schon das Risiko) + 2 Pp."""
-    return coe + HURDLE_PREMIUM
+    """Hürde für einen Kauf = höherer Wert aus persönlicher Mindestrendite und Eigenkapitalkosten (nach Unsicherheit)."""
+    return max(MIN_RETURN, coe)
 
 
 def _level(pts: int) -> str:
@@ -314,12 +392,26 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
         return {"fair_value": None, "er": None,
                 "reason": "Keine belastbare Ertragsbasis (Verlust, negativer Cashflow oder fehlende Daten)."}
 
+    ny = _v(r.get("rev_growth_ny"))
+    if ny is not None and ny < 0 and not cyclical and g > ny:
+        g = _clip(ny, G_MIN, g)
+        unc.append((1, f"Konsens erwartet Umsatzrückgang ({ny:+.1%}) – keine Rückkehr zum alten Wachstum unterstellt"))
+    events = [] if r.get("is_reit") else EVENTS.get(r.get("symbol") or "", [])
+    shock = event_shock(events) or None
+    shock_factor = 1.0
+    for _, fct in (shock or ()):
+        shock_factor *= fct
+    for e in events:
+        unc.append((1, f"Bekanntes Ereignis: {e['ereignis']} ({e['jahr']}, ~{float(e['umsatzanteil']):.0%} des Umsatzes) – "
+                       f"im Modell {float(e['umsatzanteil']) * float(e['erosion']):.0%} dauerhaft weniger Ertragskraft"))
     cap = cap_for(q_score)
+    if src.startswith(NO_HIST_SRC) or (_v(r.get("hist_years")) or 0) < 3:
+        cap = min(cap, CAP_NARROW)   # ohne Mehrjahresdaten kein belegter breiter Burggraben
     near = None if r.get("is_reit") else near_growth(r)
     gn = [g if x is None else x for x in near] if near else [g, g]
     g5 = ((1 + gn[0]) * (1 + gn[1]) * (1 + g) ** 3) ** 0.2 - 1   # Ø Wachstum Jahre 1-5
     # Markt zweifelt: eingepreistes Wachstum weit unter der Modellannahme -> kürzere Vorteils-Periode
-    ig0 = implied_growth(price, cf0, roic, coe, cap)
+    ig0 = implied_growth(price, cf0, roic, coe, cap, shock=shock)
     # Verglichen wird mit dem niedrigeren Wert aus Modell- und Ø-Wachstum: Ein optimistischer Konsens allein
     # soll nicht als "Markt zweifelt" zählen (sonst würden höhere Prognosen die Bewertung senken)
     g_doubt = min(g, g5)
@@ -329,18 +421,19 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
                        "Wettbewerbsvorteil kürzer angesetzt"))
         cap = shorter_cap(cap)
     near_txt = (f"Jahr 1–2 Konsens {gn[0]:+.1%} / {gn[1]:+.1%}, danach " if near else "")
-    er = irr(price, cf0, g, roic, cap, near)
-    methods = [{"name": "DCF zu Eigenkapitalkosten", "value": value(cf0, g, roic, coe, cap=cap, near=near),
+    er = irr(price, cf0, g, roic, cap, near, shock)
+    methods = [{"name": "DCF zu Eigenkapitalkosten", "value": value(cf0, g, roic, coe, cap=cap, near=near, shock=shock),
                 "detail": f"{src}: {cf0:.2f} je Aktie, {near_txt}Wachstum {g:.1%} bis Jahr {5 if cap > 7 else 3}, "
                           f"Auslaufen auf 3 % bis Jahr {cap} (Qualität), Reinvestition über "
                           f"{roic_src}{f' {roic:.0%}' if roic else ''}, Eigenkapitalkosten {coe:.0%} "
                           f"(Unsicherheit {pre_level})"}]
     if hist_yield is not None:
         hy = _clip(hist_yield, max(HIST_YIELD_MIN, cf0 / price / HIST_RATIO_MAX), 0.15)
-        methods.append({"name": "Eigene Bewertungshistorie", "value": cf0 / hy,
+        methods.append({"name": "Eigene Bewertungshistorie", "value": cf0 * shock_factor / hy,
                         "detail": f"Ertragskraft {cf0:.2f} / Median-Owner-Earnings-Rendite 5 J. {hist_yield:.1%}"
                                   + (f" (begrenzt auf {hy:.1%}: höchstens 28x bzw. 1,5-fache heutige Bewertung)"
-                                     if hy != hist_yield else "")})
+                                     if hy != hist_yield else "")
+                                  + (f"; × {shock_factor:.2f} wegen bekanntem Ereignis" if shock else "")})
     vals = [m["value"] for m in methods]
     fv = vals[0] if len(vals) == 1 else (1 - W_HIST) * vals[0] + W_HIST * vals[1]
     upside = fv / price - 1
@@ -361,11 +454,11 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
         unc.append((5, "Rechenwert mehr als 150 % über Kurs – der Markt sieht einen Bruch (Disruption, Patente, "
                        "Preiskampf?) oder die Daten sind fehlerhaft; ohne Einzelanalyse nicht verwertbar"))
     elif upside > 0.6:
-        unc.append((1, "Kurs weit unter Rechenwert – Markt preist ein Risiko ein (Disruption, Klagen, Zyklus?)"))
+        unc.append((2, "Kurs weit unter Rechenwert – Markt preist ein Risiko ein (Disruption, Klagen, Zyklus?)"))
     level = _level(sum(p for p, _ in unc))
     mos = MOS[level]
     hurdle = hurdle_for(max(coe, COE_BY_LEVEL[level]) if not r.get("is_reit") else coe)
-    buy = value(cf0, g, roic, hurdle, cap=cap, near=near)
+    buy = value(cf0, g, roic, hurdle, cap=cap, near=near, shock=shock)
 
     er_score = scale(er, ER_PTS)
     if level == "sehr hoch":
@@ -376,14 +469,14 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
 
     def scen(gg, dm, c, nr=None):
         gg = _clip(gg, G_MIN, G_MAX)
-        return {"er": round(irr(price, cf0 * dm, gg, roic, c, nr), 3),
-                "value": round(value(cf0 * dm, gg, roic, coe, cap=c, near=nr), 2), "growth": round(gg, 3)}
+        return {"er": round(irr(price, cf0 * dm, gg, roic, c, nr, shock), 3),
+                "value": round(value(cf0 * dm, gg, roic, coe, cap=c, near=nr, shock=shock), 2), "growth": round(gg, 3)}
 
-    flows, _ = _path(cf0, g, roic, cap, near)
+    flows, _ = _path(cf0, g, roic, cap, near, shock)
     # Fairer Wert in n Jahren: heutiger fairer Wert (beide Methoden) fortgeschrieben mit dem DCF-Pfad
-    y = [fv * value(cf0, g, roic, coe, at_year=n, cap=cap, near=near) / methods[0]["value"] for n in (1, 2, 3)]
+    y = [fv * value(cf0, g, roic, coe, at_year=n, cap=cap, near=near, shock=shock) / methods[0]["value"] for n in (1, 2, 3)]
     # Kurs in n Jahren, wenn die Bewertung bleibt (Markt verlangt weiter dieselbe Rendite, keine Neubewertung)
-    keep = [value(cf0, g, roic, er, at_year=n, cap=cap, near=near) for n in (1, 2, 3)]
+    keep = [value(cf0, g, roic, er, at_year=n, cap=cap, near=near, shock=shock) for n in (1, 2, 3)]
     total3 = (y[2] + sum(flows[:3])) / price - 1
     return {
         "er": round(er, 4), "hurdle": round(hurdle, 3), "buy_price": round(buy, 2),
@@ -399,6 +492,8 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
         "buy_out_of_reach": bool(buy < OUT_OF_REACH * price),
         "scenarios": {"bear": scen(min(g + BEAR["dg"], BEAR["g_max"]), BEAR["cf"], CAP_NONE),
                       "bull": scen(g + BULL["dg"], BULL["cf"], cap, near)},
+        "events": [{k: e.get(k) for k in ("ereignis", "jahr", "umsatzanteil", "erosion", "quelle", "url", "geprueft")}
+                   for e in events] or None,
         "growth_near": None if not near else [round(x, 3) for x in gn], "growth_5y": round(g5, 3),
         "y1": round(y[0], 2), "y2": round(y[1], 2), "y3": round(y[2], 2),
         "keep": [round(x, 2) for x in keep], "dist3": round(sum(flows[:3]), 2),
