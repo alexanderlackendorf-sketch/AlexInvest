@@ -20,7 +20,7 @@
     ["MC.PA", "LVMH", "Europa"], ["OR.PA", "L'Oréal", "Europa"], ["RMS.PA", "Hermès", "Europa"], ["SU.PA", "Schneider Electric", "Europa"],
     ["AI.PA", "Air Liquide", "Europa"], ["TTE.PA", "TotalEnergies", "Europa"], ["SAN.PA", "Sanofi", "Europa"], ["SAF.PA", "Safran", "Europa"],
     ["EL.PA", "EssilorLuxottica", "Europa"], ["BNP.PA", "BNP Paribas", "Europa"],
-    ["NESN.SW", "Nestlé", "Europa"], ["ROG.SW", "Roche", "Europa"], ["NOVN.SW", "Novartis", "Europa"], ["UBSG.SW", "UBS", "Europa"],
+    ["NESN.SW", "Nestlé", "Europa"], ["ROP.SW", "Roche", "Europa"], ["NOVN.SW", "Novartis", "Europa"], ["UBSG.SW", "UBS", "Europa"],
     ["CFR.SW", "Richemont", "Europa"], ["ZURN.SW", "Zurich Insurance", "Europa"],
     ["AZN.L", "AstraZeneca", "Europa"], ["SHEL.L", "Shell", "Europa"], ["ULVR.L", "Unilever", "Europa"], ["HSBA.L", "HSBC", "Europa"],
     ["REL.L", "RELX", "Europa"], ["LSEG.L", "London Stock Exchange Group", "Europa"], ["RR.L", "Rolls-Royce", "Europa"],

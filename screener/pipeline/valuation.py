@@ -39,6 +39,7 @@ import datetime as _dt
 import json as _json
 from pathlib import Path as _Path
 
+from .fmt import de
 from .quality import scale
 
 _CONFIG = _Path(__file__).resolve().parent.parent / "config"
@@ -272,7 +273,7 @@ def base_cash_flow(r: dict, cyclical: bool) -> tuple[float | None, str]:
             m, how = last, "Marge letztes GJ (steigt strukturell)"
         else:
             m, how = (last + med) / 2, "Ø Marge letztes GJ und 5J-Median"
-        cf, txt = m * rev_ps - sbc_ps, f"Owner Earnings ({how} {m:.1%} × Umsatz je Aktie) − Aktienvergütung"
+        cf, txt = m * rev_ps - sbc_ps, f"Owner Earnings ({how} {de(m, 1)} × Umsatz je Aktie) − Aktienvergütung"
         # V5b: Investitionsboom – tatsächlicher FCF weit unter den Owner Earnings (Investitionen >> Abschreibungen)
         att = 1 - (_v(r.get("minority_share")) or 0.0)
         ttm = _v(r.get("fcf_margin"))   # Yahoo TTM: konsolidiert, ohne Minderheiten-Abzug
@@ -281,9 +282,9 @@ def base_cash_flow(r: dict, cyclical: bool) -> tuple[float | None, str]:
             cash = (sum(fm) / len(fm)) * rev_ps - sbc_ps
             if cash < CAPEX_BOOM * cf:
                 cf = (cf + max(cash, 0.0)) / 2
-                txt += f"; Investitionsboom: Mittel mit FCF-basierter Ertragskraft ({max(cash, 0):.2f})"
+                txt += f"; Investitionsboom: Mittel mit FCF-basierter Ertragskraft ({de(max(cash, 0), 2, pct=False)})"
         if (_v(r.get("minority_share")) or 0) >= 0.05:   # unter 5 % nicht erwähnenswert
-            txt += f"; nur Anteil der Aktionäre ({att:.0%}, ohne Minderheiten)"
+            txt += f"; nur Anteil der Aktionäre ({de(att, 0)}, ohne Minderheiten)"
         if r.get("lease_deducted"):
             txt += "; nach Leasingtilgung (IFRS 16)"
         return cf, txt
@@ -374,7 +375,7 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
             roe = r["roe"] * 0.9
         pb = _v(r.get("pb"))
         cf0 = roe * price / pb if (roe is not None and pb and pb > 0) else None
-        src = f"Eigenkapitalrendite {roe:.1%} × Buchwert je Aktie" if cf0 else ""
+        src = f"Eigenkapitalrendite {de(roe, 1)} × Buchwert je Aktie" if cf0 else ""
         g = growth_rate(r, G_MAX_FIN)
         roic, roic_src = (_clip(roe, ROIC_MIN, ROIC_MAX) if roe else None), "ROE Median 5 J."
         coe = max(COE_FIN, COE_BY_LEVEL[pre_level])
@@ -395,15 +396,15 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
     ny = _v(r.get("rev_growth_ny"))
     if ny is not None and ny < 0 and not cyclical and g > ny:
         g = _clip(ny, G_MIN, g)
-        unc.append((1, f"Konsens erwartet Umsatzrückgang ({ny:+.1%}) – keine Rückkehr zum alten Wachstum unterstellt"))
+        unc.append((1, f"Konsens erwartet Umsatzrückgang ({de(ny, 1, sign=True)}) – keine Rückkehr zum alten Wachstum unterstellt"))
     events = [] if r.get("is_reit") else EVENTS.get(r.get("symbol") or "", [])
     shock = event_shock(events) or None
     shock_factor = 1.0
     for _, fct in (shock or ()):
         shock_factor *= fct
     for e in events:
-        unc.append((1, f"Bekanntes Ereignis: {e['ereignis']} ({e['jahr']}, ~{float(e['umsatzanteil']):.0%} des Umsatzes) – "
-                       f"im Modell {float(e['umsatzanteil']) * float(e['erosion']):.0%} dauerhaft weniger Ertragskraft"))
+        unc.append((1, f"Bekanntes Ereignis: {e['ereignis']} ({e['jahr']}, ~{de(float(e['umsatzanteil']), 0)} des Umsatzes) – "
+                       f"im Modell {de(float(e['umsatzanteil']) * float(e['erosion']), 0)} dauerhaft weniger Ertragskraft"))
     cap = cap_for(q_score)
     if src.startswith(NO_HIST_SRC) or (_v(r.get("hist_years")) or 0) < 3:
         cap = min(cap, CAP_NARROW)   # ohne Mehrjahresdaten kein belegter breiter Burggraben
@@ -417,29 +418,29 @@ def fair_value(r: dict, q_score: float | None) -> dict | None:
     g_doubt = min(g, g5)
     doubt = ig0 is not None and g_doubt - ig0 > DOUBT_GAP
     if doubt:
-        unc.append((2, f"Markt zweifelt: Kurs preist {ig0:+.1%} Wachstum ein, Modell rechnet mit {g_doubt:+.1%} – "
+        unc.append((2, f"Markt zweifelt: Kurs preist {de(ig0, 1, sign=True)} Wachstum ein, Modell rechnet mit {de(g_doubt, 1, sign=True)} – "
                        "Wettbewerbsvorteil kürzer angesetzt"))
         cap = shorter_cap(cap)
-    near_txt = (f"Jahr 1–2 Konsens {gn[0]:+.1%} / {gn[1]:+.1%}, danach " if near else "")
+    near_txt = (f"Jahr 1–2 Konsens {de(gn[0], 1, sign=True)} / {de(gn[1], 1, sign=True)}, danach " if near else "")
     er = irr(price, cf0, g, roic, cap, near, shock)
     methods = [{"name": "DCF zu Eigenkapitalkosten", "value": value(cf0, g, roic, coe, cap=cap, near=near, shock=shock),
-                "detail": f"{src}: {cf0:.2f} je Aktie, {near_txt}Wachstum {g:.1%} bis Jahr {5 if cap > 7 else 3}, "
+                "detail": f"{src}: {de(cf0, 2, pct=False)} je Aktie, {near_txt}Wachstum {de(g, 1)} bis Jahr {5 if cap > 7 else 3}, "
                           f"Auslaufen auf 3 % bis Jahr {cap} (Qualität), Reinvestition über "
-                          f"{roic_src}{f' {roic:.0%}' if roic else ''}, Eigenkapitalkosten {coe:.0%} "
+                          f"{roic_src}{f' {de(roic, 0)}' if roic else ''}, Eigenkapitalkosten {de(coe, 0)} "
                           f"(Unsicherheit {pre_level})"}]
     if hist_yield is not None:
         hy = _clip(hist_yield, max(HIST_YIELD_MIN, cf0 / price / HIST_RATIO_MAX), 0.15)
         methods.append({"name": "Eigene Bewertungshistorie", "value": cf0 * shock_factor / hy,
-                        "detail": f"Ertragskraft {cf0:.2f} / Median-Owner-Earnings-Rendite 5 J. {hist_yield:.1%}"
-                                  + (f" (begrenzt auf {hy:.1%}: höchstens 28x bzw. 1,5-fache heutige Bewertung)"
+                        "detail": f"Ertragskraft {de(cf0, 2, pct=False)} / Median-Owner-Earnings-Rendite 5 J. {de(hist_yield, 1)}"
+                                  + (f" (begrenzt auf {de(hy, 1)}: höchstens 28x bzw. 1,5-fache heutige Bewertung)"
                                      if hy != hist_yield else "")
-                                  + (f"; × {shock_factor:.2f} wegen bekanntem Ereignis" if shock else "")})
+                                  + (f"; × {de(shock_factor, 2, pct=False)} wegen bekanntem Ereignis" if shock else "")})
     vals = [m["value"] for m in methods]
     fv = vals[0] if len(vals) == 1 else (1 - W_HIST) * vals[0] + W_HIST * vals[1]
     upside = fv / price - 1
     if methods[0]["value"] / price - 1 > MAX_UPSIDE or er >= 0.40:
         return {"fair_value": None, "er": None,
-                "reason": f"Rechnerischer Wert {upside:+.0%} über Kurs bzw. erwartete Rendite ≥ 40 % – bei "
+                "reason": f"Rechnerischer Wert {de(upside, 0, sign=True)} über Kurs bzw. erwartete Rendite ≥ 40 % – bei "
                           "Großunternehmen fast immer Datenfehler (Währung, Aktiengattung, Abspaltung) oder "
                           "Sondersituation; nicht bewertet."}
 
