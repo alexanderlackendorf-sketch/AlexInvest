@@ -337,7 +337,11 @@ def main(argv=None):
     track = _load(state / "tracking.json", {})
     track = tracking.snapshot(track, now.date(), out_rows, scoring.MODEL_VERSION)
     _save(state / "tracking.json", track)
-    track_eval = tracking.evaluate(track, {k: v["Close"] for k, v in prices.items()}, scoring.MODEL_VERSION)
+    closes_all = {k: v["Close"] for k, v in prices.items()}
+    track_eval = tracking.evaluate(track, closes_all, scoring.MODEL_VERSION)
+    # Frühere Modelle weiter auswerten (eigene Tabelle, nicht mit dem aktuellen Modell vermischt)
+    old_models = sorted({g.get("model", 1) for g in track.get("snapshots", {}).values()} - {scoring.MODEL_VERSION}, reverse=True)
+    track_prev = [e for e in (tracking.evaluate(track, closes_all, mv) for mv in old_models) if e["cohorts"]]
 
     meta = {
         "generated_at": now.isoformat(timespec="seconds"),
@@ -348,6 +352,8 @@ def main(argv=None):
         "min_return": valuation.MIN_RETURN,
         "buy_list": sum(1 for r in out_rows if r.get("on_buy_list")),
         "tracking": track_eval,
+        "tracking_prev": track_prev,
+        "model_since": min((x[0] for h in hist.values() for x in h if len(x) > 2 and x[2] == scoring.MODEL_VERSION), default=today),
         "watchlist": digest.load_watchlist(),
         "repo": os.environ.get("GITHUB_REPOSITORY", "alexanderlackendorf-sketch/AlexInvest"),
         "hist_sources": {src: sum(1 for r in out_rows if r.get("hist_source") == src)

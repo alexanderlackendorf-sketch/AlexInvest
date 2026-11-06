@@ -282,7 +282,7 @@ def base_cash_flow(r: dict, cyclical: bool) -> tuple[float | None, str]:
             if cash < CAPEX_BOOM * cf:
                 cf = (cf + max(cash, 0.0)) / 2
                 txt += f"; Investitionsboom: Mittel mit FCF-basierter Ertragskraft ({max(cash, 0):.2f})"
-        if _v(r.get("minority_share")):
+        if (_v(r.get("minority_share")) or 0) >= 0.05:   # unter 5 % nicht erwähnenswert
             txt += f"; nur Anteil der Aktionäre ({att:.0%}, ohne Minderheiten)"
         if r.get("lease_deducted"):
             txt += "; nach Leasingtilgung (IFRS 16)"

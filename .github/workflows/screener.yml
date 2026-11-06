@@ -91,6 +91,11 @@ jobs:
               --body "Hier erscheint jeden Freitag der Wochen-Digest des Screeners. Jeder neue Kommentar löst eine E-Mail-Benachrichtigung aus.")
             NUM="${URL##*/}"
           fi
+          # Höchstens ein Digest pro Tag (z. B. manueller Lauf vormittags + regulärer Lauf abends)
+          TODAY=$(gh api "repos/${{ github.repository }}/issues/$NUM/comments?since=$(date -u +%Y-%m-%dT00:00:00Z)" --jq length)
+          if [ "${TODAY:-0}" != "0" ] && [ "${{ github.event.inputs.digest }}" != "true" ]; then
+            echo "Digest heute bereits verschickt"; exit 0
+          fi
           gh issue comment "$NUM" --body-file digest.md
 
       - name: Datenqualitäts-Alarm als Issue-Kommentar (-> E-Mail)

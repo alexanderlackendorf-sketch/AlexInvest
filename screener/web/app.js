@@ -262,7 +262,16 @@ function kpis() {
   $("#kpis").innerHTML = `<div class="kpi-main">${main.map(([t, v, sub, p, cls]) =>
       `<button class="kpi ${cls}" data-preset="${p}"><b>${v}</b><span>${t}</span><small>${sub}</small></button>`).join("")}</div>
     <div class="kpi-minor">${minor.map(([t, p]) => p ? `<button class="link" data-preset="${p}">${esc(t)}</button>` : `<span>${esc(t)}</span>`).join("<i>·</i>")}</div>`;
-  document.querySelectorAll("#kpis [data-preset]").forEach((k) => k.onclick = () => setPreset(k.dataset.preset));
+  document.querySelectorAll("#kpis [data-preset]").forEach((k) => k.onclick = () => {
+    const id = k.dataset.preset;
+    if (PRESET !== id) setPreset(id);
+    // Gruppen der Kaufliste stehen direkt darunter; alles andere filtert die große Tabelle weiter unten
+    const target = document.querySelector(`.bl-${id}`) || $("#presets");
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      target.classList.remove("flash"); void target.offsetWidth; target.classList.add("flash");
+    }
+  });
 }
 
 /* ---------- Kaufliste: gute Unternehmen nach Abstand zum Kaufkurs, gruppiert ---------- */
@@ -452,7 +461,11 @@ function movers() {
   const mini = (rows, key) => rows.length ? rows.map((r) =>
     `<tr data-s="${esc(r.symbol)}"><td class="l"><div class="name"><b>${esc(r.symbol)}</b><small>${esc(r.name)}</small></div></td>
      <td>${scoreBadge(r.score)}</td><td class="n">${key ? delta(r[key]) : pct(zoneDist(r), 1, false)}</td></tr>`).join("")
-    : '<tr><td class="l muted">Noch keine Historie – erscheint nach einigen Tagen Laufzeit.</td></tr>';
+    : `<tr><td class="l muted" style="white-space:normal">${noHist}</td></tr>`;
+  const since = DATA.meta.model_since || (DATA.meta.tracking && DATA.meta.tracking.since);
+  const noHist = since
+    ? `Neues Bewertungsmodell seit ${new Date(since).toLocaleDateString("de-DE")}. Scores älterer Modelle sind nicht vergleichbar, deshalb erscheinen Veränderungen ab ${new Date(Date.parse(since) + 7 * 864e5).toLocaleDateString("de-DE")} (1 Woche) bzw. ${new Date(Date.parse(since) + 30 * 864e5).toLocaleDateString("de-DE")} (1 Monat).`
+    : "Noch keine Historie – erscheint nach einigen Tagen Laufzeit.";
   const by = (k, dir) => rated.filter((r) => isNum(r[k]) && (dir > 0 ? r[k] > 0 : r[k] < 0))
     .sort((a, b) => dir * (b[k] - a[k])).slice(0, 15);
   $("#upW").innerHTML = mini(by("score_chg_1w", 1), "score_chg_1w");
@@ -462,27 +475,33 @@ function movers() {
 }
 
 /* ---------- Erfolgskontrolle ---------- */
-function trackingView() {
-  const t = DATA.meta.tracking;
-  const el = $("#track-panel");
-  if (!t || !t.cohorts) { el.innerHTML = "<h3>Erfolgskontrolle</h3><p class='small'>Noch keine Kohorten gespeichert.</p>"; return; }
+function trackTable(t) {
   const groups = [["kandidat", "Kandidaten für Einzelanalyse"], ["top_decile", "Oberstes Score-Zehntel"], ["universe", "Ganzes Universum (gleichgewichtet)"],
     ["bottom_decile", "Unterstes Score-Zehntel"], ["S&P 500", "S&P 500 (Index)"], ["DAX", "DAX (Index)"]];
   const H = { ...t.horizons, ...t.running };
   const hs = Object.keys(H);
   const cell = (v) => isNum(v) ? pct(v) : dash;
-  el.innerHTML = `<h3>Erfolgskontrolle · funktioniert das Rating?</h3>
-    <p class="small">Seit <b>${esc(t.since)}</b> wird einmal pro Woche festgehalten, welche Aktien in welcher Gruppe waren (${t.cohorts} Kohorte${t.cohorts === 1 ? "" : "n"}).
-    Gemessen wird die Rendite ab dem Schlusskurs des nächsten Handelstags, gleichgewichtet, in Handelswährung, ohne Dividenden und Kosten.
-    Ein Horizont zählt erst, wenn er für eine Kohorte vollständig abgelaufen ist. „Seit Start“ zeigt die laufende Entwicklung aller Kohorten.</p>
-    <div style="overflow-x:auto"><table class="metrics">
+  return `<div style="overflow-x:auto"><table class="metrics">
       <tr><td class="muted">Gruppe</td>${hs.map((h) => `<td class="n muted">${esc(h)}</td>`).join("")}</tr>
       ${groups.map(([k, l]) => `<tr><td>${l}</td>${hs.map((h) => `<td class="n">${cell(H[h][k])}</td>`).join("")}</tr>`).join("")}
       <tr><td><b>Kandidaten − Universum</b></td>${hs.map((h) => `<td class="n"><b>${isNum(H[h].kandidat) && isNum(H[h].universe) ? pct(H[h].kandidat - H[h].universe) : dash}</b></td>`).join("")}</tr>
       <tr><td><b>Oberstes − unterstes Zehntel</b></td>${hs.map((h) => `<td class="n"><b>${cell(H[h].spread)}</b></td>`).join("")}</tr>
       <tr><td>Trefferquote Kandidaten &gt; Universum</td>${hs.map((h) => `<td class="n">${isNum(H[h].hit_rate) ? pctPlain(H[h].hit_rate, 0) : dash}</td>`).join("")}</tr>
       <tr><td class="muted">ausgewertete Kohorten</td>${hs.map((h) => `<td class="n muted">${H[h].cohorts}</td>`).join("")}</tr>
-    </table></div>
+    </table></div>`;
+}
+function trackingView() {
+  const t = DATA.meta.tracking;
+  const el = $("#track-panel");
+  if (!t || !t.cohorts) { el.innerHTML = "<h3>Erfolgskontrolle</h3><p class='small'>Noch keine Kohorten gespeichert.</p>"; return; }
+  el.innerHTML = `<h3>Erfolgskontrolle · funktioniert das Rating?</h3>
+    <p class="small">Seit <b>${esc(t.since)}</b> wird einmal pro Woche festgehalten, welche Aktien in welcher Gruppe waren (${t.cohorts} Kohorte${t.cohorts === 1 ? "" : "n"}).
+    Gemessen wird die Rendite ab dem Schlusskurs des nächsten Handelstags, gleichgewichtet, in Handelswährung, ohne Dividenden und Kosten.
+    Ein Horizont zählt erst, wenn er für eine Kohorte vollständig abgelaufen ist. „Seit Start“ zeigt die laufende Entwicklung aller Kohorten.</p>
+    ${trackTable(t)}
+    ${(DATA.meta.tracking_prev || []).map((p) => `<h4>Frühere Modelle: Modell ${p.model} · ${p.cohorts} Kohorte${p.cohorts === 1 ? "" : "n"} seit ${esc(p.since.slice(0, 10))}</h4>
+      <p class="small muted">Die Kohorten älterer Modelle bleiben gespeichert und werden weiter gemessen – getrennt, damit sich Modelle nicht vermischen.</p>
+      ${trackTable(p)}`).join("")}
     <h4>So liest du das</h4>
     <ul class="small">
       <li>Das Rating taugt etwas, wenn <b>Kandidaten − Universum</b> und <b>oberstes − unterstes Zehntel</b> über viele Kohorten positiv sind, die Trefferquote also deutlich über 50 % liegt.</li>
@@ -777,7 +796,7 @@ function openDetail(sym) {
       <div class="lens"><b>${AMPEL[le.ampel || "grau"]} Erwartete Rendite</b>
         <span class="small">${isNum(le.er) ? `${pctPlain(le.er)} p.a. zum heutigen Kurs, Hürde ${pctPlain(le.hurdle, 0)}` : "nicht berechenbar"}</span></div>
       <div class="lens"><b>${AMPEL[lf.ampel || "grau"]} Fairer Wert mit Sicherheitsmarge</b>
-        <span class="small">${isNum(lf.discount) ? `Abschlag zum fairen Wert ${pctN(lf.discount, 0)} · nötig ${pctPlain(lf.mos, 0)} (Unsicherheit ${esc(lf.uncertainty)})` : "nicht berechenbar"}</span></div>
+        <span class="small">${isNum(lf.discount) ? `${lf.discount >= 0 ? `Abschlag zum fairen Wert ${pctPlain(lf.discount, 0)}` : `Kurs ${pctPlain(-lf.discount, 0)} über dem fairen Wert`} · nötig ${pctPlain(lf.mos, 0)} (Unsicherheit ${esc(lf.uncertainty)})` : "nicht berechenbar"}</span></div>
       <div class="note">${r.methods_agree ? "✓ <b>Alle drei Methoden einig</b> – stärkstes Signal des Screeners." : "Je mehr unabhängige Methoden grün sind, desto belastbarer das Signal. Widersprechen sie sich, liegt der Grund meist außerhalb der Zahlen."}</div>
     </div>`;
   const vp = r.v_parts || {};
