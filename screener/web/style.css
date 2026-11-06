@@ -348,3 +348,7 @@ details.summary p { line-height: 1.5; color: var(--text-secondary); }
 .top-picks table.picks th:nth-child(4), .top-picks table.picks th:nth-child(5) { width: 10.5%; }
 .top-picks table.picks th:nth-child(8) { width: 31%; }
 .top-picks table.picks td .name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+/* kurzer Hinweis, wohin ein Klick auf eine Kennzahl gesprungen ist */
+@keyframes flash { from { box-shadow: 0 0 0 2px var(--accent); } to { box-shadow: 0 0 0 2px transparent; } }
+.flash { animation: flash 1.6s ease-out; border-radius: 8px; }
+.bl-group, #presets { scroll-margin-top: 70px; }
