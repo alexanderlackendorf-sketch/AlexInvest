@@ -552,8 +552,9 @@ def watch_entry(row: dict, code: str) -> dict:
     out = {"buy_distance": None if dist is None else round(dist, 3), "on_buy_list": on_list, "watch_status": status}
     tgt, n = _nan_none(row.get("analyst_target")), row.get("analyst_count") or 0
     if tgt and price and n >= ANALYST_MIN_N and tgt < price and dist is not None and dist <= LIST_TOL:
-        out["analyst_warn"] = (f"Ø Analystenziel {tgt:,.2f} liegt unter dem Kurs ({tgt / price - 1:+.0%}, {n} Analysten) – "
-                               "Modell und Markt widersprechen sich; Grund klären").replace(",", "X").replace(".", ",").replace("X", ".")
+        de = f"{tgt:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        out["analyst_warn"] = (f"Ø Analystenziel {de} liegt unter dem Kurs ({tgt / price - 1:+.0%}, {n} Analysten) – "
+                               "Modell und Markt widersprechen sich; Grund klären").replace("%", " %")
     return out
 
 
